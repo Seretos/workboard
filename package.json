@@ -1,0 +1,44 @@
+{
+  "name": "workboard",
+  "version": "0.0.0",
+  "description": "A pinnable desktop board that surfaces your assigned tickets and spins up per-ticket worktrees, virtual desktops, and dev environments to parallelize agent-driven work.",
+  "author": "Arne von Appen",
+  "license": "MIT",
+  "main": "dist/main/main.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "electron .",
+    "dist": "electron-builder",
+    "dist:win": "electron-builder --win",
+    "dist:mac": "electron-builder --mac",
+    "dist:linux": "electron-builder --linux"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "electron": "^31.0.0",
+    "electron-builder": "^24.13.3",
+    "typescript": "^5.5.0"
+  },
+  "build": {
+    "appId": "com.seretos.workboard",
+    "productName": "Workboard",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**",
+      "assets/**"
+    ],
+    "//artifactName": "Deterministic so release.yml can compute the downloads map (platform->url) without listing release assets. ${os} resolves to windows/mac/linux; ${ext} to exe/dmg/AppImage for the targets below.",
+    "artifactName": "${name}-${version}-${os}.${ext}",
+    "win": {
+      "target": "nsis"
+    },
+    "mac": {
+      "target": "dmg"
+    },
+    "linux": {
+      "target": "AppImage"
+    }
+  }
+}
