@@ -1,0 +1,5 @@
+# Development/test dependencies. Includes the runtime requirements plus
+# the test toolchain. CI installs this file; the PyInstaller release build
+# installs the slimmer requirements.txt.
+-r requirements.txt
+pytest>=8
