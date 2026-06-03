@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, screen } from "electron";
 import * as path from "path";
 import * as fs from "fs";
 import * as readline from "readline";
@@ -119,10 +119,14 @@ ipcMain.handle("appInfo.getVersion", () => {
 // ---------------------------------------------------------------------------
 // Window creation
 // ---------------------------------------------------------------------------
-function createWindow(): void {
+export function createWindow(): void {
+  const { height } = screen.getPrimaryDisplay().workAreaSize;
   const win = new BrowserWindow({
-    width: 900,
-    height: 600,
+    width: 360,
+    height,
+    x: 0,
+    y: 0,
+    icon: path.join(__dirname, "../../assets/icon.png"),
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
