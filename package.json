@@ -32,7 +32,6 @@
       "dist/**",
       "assets/**"
     ],
-    "//artifactName": "Deterministic so release.yml can compute the downloads map (platform->url) without listing release assets. ${os} resolves to windows/mac/linux; ${ext} to exe/dmg/AppImage for the targets below.",
     "artifactName": "${name}-${version}-${os}.${ext}",
     "win": {
       "target": "nsis",
