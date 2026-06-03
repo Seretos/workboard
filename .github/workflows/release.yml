@@ -133,6 +133,18 @@ jobs:
         with:
           name: stamped-source
 
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python deps + PyInstaller
+        run: pip install -r backend/requirements.txt pyinstaller
+
+      - name: Build backend binary (${{ matrix.artifact_os }})
+        working-directory: backend
+        run: pyinstaller workboard-backend.spec --distpath ../backend-bin/${{ matrix.artifact_os }}
+
       - name: Setup Node 20
         uses: actions/setup-node@v4
         with:

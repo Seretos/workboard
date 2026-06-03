@@ -1,3 +1,8 @@
 node_modules/
 dist/
 release/
+backend-bin/
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/.pytest_cache/
