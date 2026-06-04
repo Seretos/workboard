@@ -26,6 +26,9 @@ vi.mock("electron", () => {
     ipcMain: {
       handle: vi.fn(),
     },
+    screen: {
+      getPrimaryDisplay: vi.fn(() => ({ workAreaSize: { width: 1920, height: 1080 } })),
+    },
   };
 });
 
@@ -114,5 +117,57 @@ describe("resolveBackendBinary", () => {
       /backend-bin\/linux\/workboard-backend$/
     );
     expect(result).not.toMatch(/\.exe$/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createWindow — BrowserWindow geometry and icon
+// ---------------------------------------------------------------------------
+describe("createWindow", () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  it("constructs BrowserWindow with width 360", async () => {
+    const electron = await import("electron");
+
+    const { createWindow } = await import("./main.js");
+    createWindow();
+
+    expect(electron.BrowserWindow).toHaveBeenCalledWith(
+      expect.objectContaining({ width: 360 })
+    );
+  });
+
+  it("constructs BrowserWindow with icon ending in icon.png", async () => {
+    const electron = await import("electron");
+
+    const { createWindow } = await import("./main.js");
+    createWindow();
+
+    const calls = (electron.BrowserWindow as unknown as ReturnType<typeof vi.fn>).mock.calls;
+    const lastOpts = calls[calls.length - 1][0] as Record<string, unknown>;
+    expect(typeof lastOpts.icon).toBe("string");
+    expect((lastOpts.icon as string).replace(/\\/g, "/")).toMatch(/icon\.png$/);
+  });
+
+  it("calls screen.getPrimaryDisplay to get workAreaSize height", async () => {
+    const electron = await import("electron");
+
+    const { createWindow } = await import("./main.js");
+    createWindow();
+
+    expect(electron.screen.getPrimaryDisplay).toHaveBeenCalled();
+  });
+
+  it("constructs BrowserWindow with height from workAreaSize (1080)", async () => {
+    const electron = await import("electron");
+
+    const { createWindow } = await import("./main.js");
+    createWindow();
+
+    expect(electron.BrowserWindow).toHaveBeenCalledWith(
+      expect.objectContaining({ height: 1080 })
+    );
   });
 });

@@ -2,6 +2,7 @@ node_modules/
 dist/
 release/
 backend-bin/
+.venv-build/
 **/__pycache__/
 **/*.pyc
 **/*.pyo

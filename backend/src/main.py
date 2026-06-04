@@ -14,9 +14,11 @@ import uvicorn
 from fastapi import FastAPI
 
 from src.api.health import router as health_router
+from src.api.tickets import router as tickets_router
 
 app = FastAPI(title="Workboard Backend")
 app.include_router(health_router)
+app.include_router(tickets_router)
 
 
 def main() -> None:

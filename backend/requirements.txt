@@ -1,3 +1,9 @@
 fastapi==0.115.*
 uvicorn[standard]==0.30.*
 httpx>=0.27
+# Domain lib (private, not on PyPI). Installed straight from the public
+# Seretos repo and pinned to the floating release/0.x branch so minor/patch
+# releases flow in without a downstream bump — same convention this lib uses
+# for its own lib-python-config dependency. The transitive lib-python-config
+# git dependency is resolved automatically from its pyproject.
+lib-python-projects @ git+https://github.com/Seretos/lib-python-projects@release/0.x
