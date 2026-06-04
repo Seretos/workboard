@@ -68,7 +68,7 @@ jobs:
           # pattern (${name}-${version}-${os}.${ext}) and the version parsed
           # from the tag. Matches what release.yml computed.
           BASE="https://github.com/${{ github.repository }}/releases/download/${TAG}"
-          WIN_URL="${BASE}/${NAME}-${VERSION}-windows.exe"
+          WIN_URL="${BASE}/${NAME}-${VERSION}-win.exe"
           MAC_URL="${BASE}/${NAME}-${VERSION}-mac.dmg"
           LINUX_URL="${BASE}/${NAME}-${VERSION}-linux.AppImage"
           DOWNLOADS=$(jq -nc \

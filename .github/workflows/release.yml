@@ -235,9 +235,9 @@ jobs:
           DESC=$(jq -r '.description' package.json)
           # Build the downloads map: platform -> Release asset download URL.
           # Asset names come from electron-builder's deterministic artifactName
-          # ${name}-${version}-${os}.${ext}: windows->exe, mac->dmg, linux->AppImage.
+          # ${name}-${version}-${os}.${ext}: win->exe, mac->dmg, linux->AppImage.
           BASE="https://github.com/${{ github.repository }}/releases/download/${TAG}"
-          WIN_URL="${BASE}/${NAME}-${VERSION}-windows.exe"
+          WIN_URL="${BASE}/${NAME}-${VERSION}-win.exe"
           MAC_URL="${BASE}/${NAME}-${VERSION}-mac.dmg"
           LINUX_URL="${BASE}/${NAME}-${VERSION}-linux.AppImage"
           DOWNLOADS=$(jq -nc \
