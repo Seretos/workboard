@@ -4,10 +4,15 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Workboard</title>
+    <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
-    <h1 id="app-heading">Workboard</h1>
+    <header class="panel-header">
+      <span class="panel-title">workboard</span>
+      <span id="ticket-count" class="ticket-count"></span>
+    </header>
     <ul id="ticket-list"></ul>
+    <footer class="status-bar"></footer>
     <!-- renderer.ts compiles to dist/renderer/renderer.js; this page is loaded
          from dist/renderer/index.html so the relative path is just the basename. -->
     <script src="renderer.js"></script>
