@@ -17,9 +17,23 @@ vi.mock("electron", () => {
     BrowserWindow: vi.fn().mockImplementation(() => ({
       loadFile: vi.fn(),
       isDestroyed: vi.fn(() => false),
+      isVisible: vi.fn(() => false),
+      show: vi.fn(),
+      hide: vi.fn(),
+      // on() records handlers so tests can retrieve and invoke them.
+      on: vi.fn(),
       webContents: { send: vi.fn() },
       getAllWindows: vi.fn(() => []),
     })),
+    // Each Tray() call gets its own fresh instance so tests don't share state.
+    Tray: vi.fn().mockImplementation(() => ({
+      on: vi.fn(),
+      setToolTip: vi.fn(),
+      setContextMenu: vi.fn(),
+    })),
+    Menu: {
+      buildFromTemplate: vi.fn(() => ({})),
+    },
     dialog: {
       showErrorBox: vi.fn(),
     },
@@ -27,7 +41,10 @@ vi.mock("electron", () => {
       handle: vi.fn(),
     },
     screen: {
-      getPrimaryDisplay: vi.fn(() => ({ workAreaSize: { width: 1920, height: 1080 } })),
+      // Return workArea (x/y/width/height) used by the right-dock calculation.
+      getPrimaryDisplay: vi.fn(() => ({
+        workArea: { x: 0, y: 0, width: 1920, height: 1080 },
+      })),
     },
   };
 });
@@ -151,7 +168,7 @@ describe("createWindow", () => {
     expect((lastOpts.icon as string).replace(/\\/g, "/")).toMatch(/icon\.png$/);
   });
 
-  it("calls screen.getPrimaryDisplay to get workAreaSize height", async () => {
+  it("calls screen.getPrimaryDisplay to get workArea", async () => {
     const electron = await import("electron");
 
     const { createWindow } = await import("./main.js");
@@ -160,7 +177,7 @@ describe("createWindow", () => {
     expect(electron.screen.getPrimaryDisplay).toHaveBeenCalled();
   });
 
-  it("constructs BrowserWindow with height from workAreaSize (1080)", async () => {
+  it("constructs BrowserWindow with height from workArea (1080)", async () => {
     const electron = await import("electron");
 
     const { createWindow } = await import("./main.js");
@@ -169,5 +186,317 @@ describe("createWindow", () => {
     expect(electron.BrowserWindow).toHaveBeenCalledWith(
       expect.objectContaining({ height: 1080 })
     );
+  });
+
+  // ---- Regression tests for right-dock, frameless, tray-only behaviour ----
+
+  it("regression: x is right-docked (workArea.x + workArea.width - 360 = 1560)", async () => {
+    const electron = await import("electron");
+    // Default mock: workArea { x:0, y:0, width:1920, height:1080 } → x = 1560
+
+    const { createWindow } = await import("./main.js");
+    createWindow();
+
+    expect(electron.BrowserWindow).toHaveBeenCalledWith(
+      expect.objectContaining({ x: 1560 })
+    );
+  });
+
+  it("regression: x accounts for non-zero workArea origin (x:100, width:1920 → 1660)", async () => {
+    const electron = await import("electron");
+    // Override getPrimaryDisplay for this test to simulate a left taskbar / offset display.
+    (electron.screen.getPrimaryDisplay as ReturnType<typeof vi.fn>).mockReturnValueOnce({
+      workArea: { x: 100, y: 40, width: 1920, height: 1040 },
+    });
+
+    const { createWindow } = await import("./main.js");
+    createWindow();
+
+    // x = 100 + 1920 - 360 = 1660; y = 40; height = 1040
+    expect(electron.BrowserWindow).toHaveBeenCalledWith(
+      expect.objectContaining({ x: 1660, y: 40, height: 1040 })
+    );
+  });
+
+  it("regression: frame is false (frameless panel)", async () => {
+    const electron = await import("electron");
+
+    const { createWindow } = await import("./main.js");
+    createWindow();
+
+    expect(electron.BrowserWindow).toHaveBeenCalledWith(
+      expect.objectContaining({ frame: false })
+    );
+  });
+
+  it("regression: skipTaskbar is true", async () => {
+    const electron = await import("electron");
+
+    const { createWindow } = await import("./main.js");
+    createWindow();
+
+    expect(electron.BrowserWindow).toHaveBeenCalledWith(
+      expect.objectContaining({ skipTaskbar: true })
+    );
+  });
+
+  it("regression: resizable is false", async () => {
+    const electron = await import("electron");
+
+    const { createWindow } = await import("./main.js");
+    createWindow();
+
+    expect(electron.BrowserWindow).toHaveBeenCalledWith(
+      expect.objectContaining({ resizable: false })
+    );
+  });
+
+  it("regression: alwaysOnTop is true", async () => {
+    const electron = await import("electron");
+
+    const { createWindow } = await import("./main.js");
+    createWindow();
+
+    expect(electron.BrowserWindow).toHaveBeenCalledWith(
+      expect.objectContaining({ alwaysOnTop: true })
+    );
+  });
+
+  it("regression: show is false (hidden by default)", async () => {
+    const electron = await import("electron");
+
+    const { createWindow } = await import("./main.js");
+    createWindow();
+
+    expect(electron.BrowserWindow).toHaveBeenCalledWith(
+      expect.objectContaining({ show: false })
+    );
+  });
+
+  // ---- Close-handler tests ----
+
+  it("close handler calls event.preventDefault() and win.hide() when not quitting", async () => {
+    const electron = await import("electron");
+
+    const { createWindow } = await import("./main.js");
+    const win = createWindow();
+
+    // win.on is a spy; find the registered "close" handler.
+    const onSpy = (win.on as ReturnType<typeof vi.fn>);
+    const closeCall = onSpy.mock.calls.find((c: unknown[]) => c[0] === "close");
+    expect(closeCall).toBeDefined();
+
+    const fakeEvent = { preventDefault: vi.fn() };
+    (closeCall![1] as (e: typeof fakeEvent) => void)(fakeEvent);
+
+    expect(fakeEvent.preventDefault).toHaveBeenCalled();
+    expect(win.hide).toHaveBeenCalled();
+    // Window must not be destroyed — isDestroyed() still returns false.
+    expect(win.isDestroyed()).toBe(false);
+  });
+
+  it("close handler does NOT prevent default when app is quitting (Beenden)", async () => {
+    const electron = await import("electron");
+
+    const { createWindow, createTray } = await import("./main.js");
+    const win = createWindow();
+
+    // Simulate "Beenden": invoke the context-menu click to set isQuitting.
+    const TrayCtor = electron.Tray as unknown as ReturnType<typeof vi.fn>;
+    const MenuMock = electron.Menu as unknown as { buildFromTemplate: ReturnType<typeof vi.fn> };
+    // Create the tray so the "Beenden" click handler registers.
+    createTray(win as any);
+    const lastTemplate = MenuMock.buildFromTemplate.mock.calls[
+      MenuMock.buildFromTemplate.mock.calls.length - 1
+    ][0] as Array<{ label: string; click: () => void }>;
+    const beendenItem = lastTemplate.find((item) => item.label === "Beenden");
+    expect(beendenItem).toBeDefined();
+    // Fire "Beenden" — this sets isQuitting = true.
+    beendenItem!.click();
+
+    // Now fire the close handler — it should NOT call preventDefault.
+    const onSpy = (win.on as ReturnType<typeof vi.fn>);
+    const closeCall = onSpy.mock.calls.find((c: unknown[]) => c[0] === "close");
+    expect(closeCall).toBeDefined();
+
+    const fakeEvent = { preventDefault: vi.fn() };
+    (closeCall![1] as (e: typeof fakeEvent) => void)(fakeEvent);
+
+    expect(fakeEvent.preventDefault).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createTray — system tray integration
+// ---------------------------------------------------------------------------
+describe("createTray", () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  it("constructs Tray with a path ending in icon.png", async () => {
+    const electron = await import("electron");
+
+    const mockWin = {
+      isVisible: vi.fn(() => false),
+      show: vi.fn(),
+      hide: vi.fn(),
+    };
+
+    const { createTray } = await import("./main.js");
+    createTray(mockWin as any);
+
+    const TrayCtor = electron.Tray as unknown as ReturnType<typeof vi.fn>;
+    expect(TrayCtor).toHaveBeenCalled();
+    const iconArg: string = TrayCtor.mock.calls[TrayCtor.mock.calls.length - 1][0];
+    expect(iconArg.replace(/\\/g, "/")).toMatch(/icon\.png$/);
+  });
+
+  it("calls tray.on with 'click' to register toggle handler", async () => {
+    const electron = await import("electron");
+
+    const mockWin = {
+      isVisible: vi.fn(() => false),
+      show: vi.fn(),
+      hide: vi.fn(),
+    };
+
+    const { createTray } = await import("./main.js");
+    createTray(mockWin as any);
+
+    const TrayCtor = electron.Tray as unknown as ReturnType<typeof vi.fn>;
+    const trayInstance = TrayCtor.mock.results[TrayCtor.mock.results.length - 1].value;
+    const onCalls: string[] = trayInstance.on.mock.calls.map((c: unknown[]) => c[0]);
+    expect(onCalls).toContain("click");
+  });
+
+  it("calls tray.on with 'double-click' to register toggle handler", async () => {
+    const electron = await import("electron");
+
+    const mockWin = {
+      isVisible: vi.fn(() => false),
+      show: vi.fn(),
+      hide: vi.fn(),
+    };
+
+    const { createTray } = await import("./main.js");
+    createTray(mockWin as any);
+
+    const TrayCtor = electron.Tray as unknown as ReturnType<typeof vi.fn>;
+    const trayInstance = TrayCtor.mock.results[TrayCtor.mock.results.length - 1].value;
+    const onCalls: string[] = trayInstance.on.mock.calls.map((c: unknown[]) => c[0]);
+    expect(onCalls).toContain("double-click");
+  });
+
+  it("clicking tray shows window when hidden", async () => {
+    const electron = await import("electron");
+
+    const mockWin = {
+      isVisible: vi.fn(() => false),
+      show: vi.fn(),
+      hide: vi.fn(),
+    };
+
+    const { createTray } = await import("./main.js");
+    createTray(mockWin as any);
+
+    const TrayCtor = electron.Tray as unknown as ReturnType<typeof vi.fn>;
+    const trayInstance = TrayCtor.mock.results[TrayCtor.mock.results.length - 1].value;
+
+    // Find and invoke the click handler
+    const clickCall = trayInstance.on.mock.calls.find((c: unknown[]) => c[0] === "click");
+    expect(clickCall).toBeDefined();
+    (clickCall![1] as () => void)();
+
+    expect(mockWin.show).toHaveBeenCalled();
+    expect(mockWin.hide).not.toHaveBeenCalled();
+  });
+
+  it("clicking tray hides window when visible", async () => {
+    const electron = await import("electron");
+
+    const mockWin = {
+      isVisible: vi.fn(() => true),
+      show: vi.fn(),
+      hide: vi.fn(),
+    };
+
+    const { createTray } = await import("./main.js");
+    createTray(mockWin as any);
+
+    const TrayCtor = electron.Tray as unknown as ReturnType<typeof vi.fn>;
+    const trayInstance = TrayCtor.mock.results[TrayCtor.mock.results.length - 1].value;
+
+    const clickCall = trayInstance.on.mock.calls.find((c: unknown[]) => c[0] === "click");
+    (clickCall![1] as () => void)();
+
+    expect(mockWin.hide).toHaveBeenCalled();
+    expect(mockWin.show).not.toHaveBeenCalled();
+  });
+
+  it("double-clicking tray shows window when hidden", async () => {
+    const electron = await import("electron");
+
+    const mockWin = {
+      isVisible: vi.fn(() => false),
+      show: vi.fn(),
+      hide: vi.fn(),
+    };
+
+    const { createTray } = await import("./main.js");
+    createTray(mockWin as any);
+
+    const TrayCtor = electron.Tray as unknown as ReturnType<typeof vi.fn>;
+    const trayInstance = TrayCtor.mock.results[TrayCtor.mock.results.length - 1].value;
+
+    const dblClickCall = trayInstance.on.mock.calls.find(
+      (c: unknown[]) => c[0] === "double-click"
+    );
+    expect(dblClickCall).toBeDefined();
+    (dblClickCall![1] as () => void)();
+
+    expect(mockWin.show).toHaveBeenCalled();
+    expect(mockWin.hide).not.toHaveBeenCalled();
+  });
+
+  it("double-clicking tray hides window when visible", async () => {
+    const electron = await import("electron");
+
+    const mockWin = {
+      isVisible: vi.fn(() => true),
+      show: vi.fn(),
+      hide: vi.fn(),
+    };
+
+    const { createTray } = await import("./main.js");
+    createTray(mockWin as any);
+
+    const TrayCtor = electron.Tray as unknown as ReturnType<typeof vi.fn>;
+    const trayInstance = TrayCtor.mock.results[TrayCtor.mock.results.length - 1].value;
+
+    const dblClickCall = trayInstance.on.mock.calls.find(
+      (c: unknown[]) => c[0] === "double-click"
+    );
+    (dblClickCall![1] as () => void)();
+
+    expect(mockWin.hide).toHaveBeenCalled();
+    expect(mockWin.show).not.toHaveBeenCalled();
+  });
+
+  it("sets tooltip to 'Workboard'", async () => {
+    const electron = await import("electron");
+
+    const mockWin = {
+      isVisible: vi.fn(() => false),
+      show: vi.fn(),
+      hide: vi.fn(),
+    };
+
+    const { createTray } = await import("./main.js");
+    createTray(mockWin as any);
+
+    const TrayCtor = electron.Tray as unknown as ReturnType<typeof vi.fn>;
+    const trayInstance = TrayCtor.mock.results[TrayCtor.mock.results.length - 1].value;
+    expect(trayInstance.setToolTip).toHaveBeenCalledWith("Workboard");
   });
 });

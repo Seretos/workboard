@@ -1,0 +1,171 @@
+/* =========================================================
+   Workboard — Referenz panel
+   Dark, right-docked panel. System fonts only — no network
+   requests for font files.
+   ========================================================= */
+
+:root {
+  --color-bg:          #0e0e10;
+  --color-bg-deep:     #0a0a0c;
+  --color-surface:     rgba(255, 255, 255, 0.025);
+  --color-border:      rgba(255, 255, 255, 0.07);
+  --color-border-top:  rgba(255, 255, 255, 0.06);
+  --color-accent:      #9ca3af;
+  --color-text:        #e4e4e7;
+  --color-text-muted:  #71717a;
+  --color-badge-bg:    rgba(156, 163, 175, 0.15);
+  --color-badge-text:  #9ca3af;
+  --font-mono:         "JetBrains Mono", "Cascadia Code", "Fira Code",
+                       ui-monospace, monospace;
+  --font-ui:           "Segoe UI Variable Display", "Segoe UI", system-ui,
+                       sans-serif;
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-ui);
+  font-size: 13px;
+}
+
+/* Flex column so header / list / footer stack and the list scrolls */
+body {
+  display: flex;
+  flex-direction: column;
+}
+
+/* ---- Panel header ---- */
+.panel-header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 18px 18px 12px;
+  flex-shrink: 0;
+}
+
+.panel-title {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text);
+  letter-spacing: 0.04em;
+  text-transform: lowercase;
+}
+
+.ticket-count {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-badge-text);
+  background: var(--color-badge-bg);
+  border-radius: 10px;
+  padding: 1px 7px;
+  min-width: 20px;
+  text-align: center;
+}
+
+/* ---- Ticket list ---- */
+#ticket-list {
+  list-style: none;
+  margin: 0;
+  padding: 0 12px 12px;
+  flex: 1;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.12) transparent;
+}
+
+#ticket-list::-webkit-scrollbar {
+  width: 4px;
+}
+
+#ticket-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+#ticket-list::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 2px;
+}
+
+/* ---- Ticket card ---- */
+.ticket-card {
+  position: relative;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 12px 14px 12px 16px;
+  margin-bottom: 8px;
+  /* 3-px left accent strip */
+  border-left: 3px solid var(--color-accent);
+  animation: sb-fade-in 0.15s ease;
+}
+
+.ticket-card:last-child {
+  margin-bottom: 0;
+}
+
+/* ---- Card internals ---- */
+.card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 5px;
+}
+
+.card-provider {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--color-badge-text);
+  background: var(--color-badge-bg);
+  border-radius: 4px;
+  padding: 1px 5px;
+  text-transform: lowercase;
+  letter-spacing: 0.03em;
+}
+
+.card-id {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+
+.card-title {
+  font-family: var(--font-ui);
+  font-size: 13px;
+  color: var(--color-text);
+  line-height: 1.4;
+  margin-bottom: 4px;
+  word-break: break-word;
+}
+
+.card-meta {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---- Status bar ---- */
+.status-bar {
+  flex-shrink: 0;
+  height: 24px;
+  background: var(--color-bg-deep);
+  border-top: 1px solid var(--color-border-top);
+}
+
+/* ---- Fade-in animation for cards ---- */
+@keyframes sb-fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
