@@ -207,7 +207,25 @@ try {
             }
         }
         else {
-            Write-Step "Build venv present - skipping pip install (pass -Install to force)"
+            # Build venv present and no explicit -Install. Don't blindly trust
+            # it: a venv created before requirements changed (or one where an
+            # earlier git install failed) can be missing the domain libs. That
+            # silently yields a backend binary which crashes at runtime with
+            # "ModuleNotFoundError: No module named 'lib_python_projects'"
+            # (exit 1 before the BACKEND_PORT handshake). Verify the runtime
+            # deps actually import before trusting the cache.
+            Write-Step "Verify build venv has backend deps"
+            & $venvPython -c "import lib_python_projects, lib_python_config, ruamel.yaml, PyInstaller" 2>$null
+            if ($LASTEXITCODE -eq 0) {
+                Write-Host "Build venv satisfies backend deps - skipping pip install (pass -Install to force a refresh)"
+            }
+            else {
+                Write-Step "Build venv is missing backend deps - installing (stale venv)"
+                Invoke-Native 'pip upgrade' { & $venvPython -m pip install --upgrade pip }
+                Invoke-Native 'pip install (backend deps + PyInstaller)' {
+                    & $venvPython -m pip install -r (Join-Path $backendDir 'requirements.txt') pyinstaller
+                }
+            }
         }
 
         Write-Step "Build backend binary (PyInstaller -> backend-bin/$($meta.artifact_os))"
