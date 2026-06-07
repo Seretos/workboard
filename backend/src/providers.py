@@ -39,12 +39,16 @@ _PROVIDERS = {
 def load_all_projects():
     """Load the configured project list using the shared `projects.yml`.
 
-    Resolution is the lib default (no `cwd` override): walk git project
-    boundaries outward from the process CWD, then fall back to the
-    user-level `~/.seretos/projects.yml`. So launching the board from
-    this repo uses the repo-local `.seretos/projects.yml` (dev/testing),
-    while the real desktop app — started outside any git repo — falls
-    through to the user-level config.
+    Resolution uses the lib defaults, so the standard precedence applies:
+    the `PROJECT_ISSUES_CONFIG` override env (highest priority) → walk git
+    project boundaries outward from the process CWD → user-level
+    `~/.seretos/projects.yml` fallback.
+
+    The Electron main process sets `PROJECT_ISSUES_CONFIG` when it spawns
+    the backend (see `resolveProjectsConfigPath` in `main.ts`), so in
+    practice that override decides the config file: the repo-local
+    `.seretos/projects.yml` in dev, and the path `main.ts` resolves in the
+    packaged app.
 
     Thin indirection around `load_projects` so tests can monkey-patch
     `src.providers.load_projects` to substitute a deterministic project

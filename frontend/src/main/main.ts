@@ -16,6 +16,32 @@ let tray: Tray | null = null;
 let isQuitting = false;
 
 // ---------------------------------------------------------------------------
+// resolveIconPath — pure, no side effects, fully testable.
+// ---------------------------------------------------------------------------
+export function resolveIconPath(): string {
+  if (!app.isPackaged) {
+    // Development: __dirname is dist/main/; assets/ is at repo root (two up)
+    return path.join(__dirname, "../../assets/icon.png");
+  }
+
+  // Packaged: electron-builder copies assets/ into the app bundle via build.files
+  return path.join(process.resourcesPath, "assets", "icon.png");
+}
+
+// ---------------------------------------------------------------------------
+// resolveProjectsConfigPath — pure, no side effects, fully testable.
+// ---------------------------------------------------------------------------
+export function resolveProjectsConfigPath(): string {
+  if (!app.isPackaged) {
+    // Development: .seretos/ is at repo root (two up from dist/main/)
+    return path.join(__dirname, "../../.seretos/projects.yml");
+  }
+
+  // Packaged: electron-builder copies .seretos/ via extraResources
+  return path.join(process.resourcesPath, ".seretos", "projects.yml");
+}
+
+// ---------------------------------------------------------------------------
 // resolveBackendBinary — pure, no side effects, fully testable.
 // ---------------------------------------------------------------------------
 export function resolveBackendBinary(): string {
@@ -66,6 +92,7 @@ export function spawnBackend(): Promise<number> {
 
     const child = spawn(binaryPath, [], {
       stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env, PROJECT_ISSUES_CONFIG: resolveProjectsConfigPath() },
     });
     backendChild = child;
 
@@ -142,7 +169,7 @@ export function createWindow(): BrowserWindow {
     skipTaskbar: true,
     resizable: false,
     show: false,
-    icon: path.join(__dirname, "../../assets/icon.png"),
+    icon: resolveIconPath(),
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
@@ -169,8 +196,7 @@ export function createWindow(): BrowserWindow {
 // Tray creation — exported for testability.
 // ---------------------------------------------------------------------------
 export function createTray(win: BrowserWindow): Tray {
-  const iconPath = path.join(__dirname, "../../assets/icon.png");
-  const t = new Tray(iconPath);
+  const t = new Tray(resolveIconPath());
   t.setToolTip("Workboard");
 
   const contextMenu = Menu.buildFromTemplate([

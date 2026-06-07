@@ -170,3 +170,31 @@ def test_tickets_lib_error_returns_500() -> None:
                side_effect=RuntimeError("config broken")):
         response = no_raise_client.get("/tickets")
     assert response.status_code == 500
+
+
+def test_tickets_loads_config_with_correct_filename() -> None:
+    """The backend resolves projects from `projects.yml` (not the lib default).
+
+    The `load_projects` call now lives in `src.providers.load_all_projects`,
+    so the filename contract is asserted there. `provider_for` is patched
+    so the sample project's tickets resolve without a network call.
+    """
+    mock_load = MagicMock(return_value=_make_result([_sample_project()]))
+    with patch("src.providers.load_projects", mock_load), \
+         patch("src.api.tickets.provider_for", return_value=_fake_provider([])):
+        client.get("/tickets")
+    mock_load.assert_called_once_with(
+        config_filename="projects.yml",
+        config_filename_alt="projects.yaml",
+    )
+
+
+def test_tickets_file_not_found_returns_500() -> None:
+    """GET /tickets when project loading raises FileNotFoundError returns HTTP 500."""
+    no_raise_client = TestClient(app, raise_server_exceptions=False)
+    with patch(
+        "src.providers.load_projects",
+        side_effect=FileNotFoundError("projects.yml not found"),
+    ):
+        response = no_raise_client.get("/tickets")
+    assert response.status_code == 500
