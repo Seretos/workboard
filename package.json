@@ -15,10 +15,12 @@
     "dist:linux": "electron-builder --linux"
   },
   "devDependencies": {
+    "@types/jsdom": "^28.0.3",
     "@types/node": "^20.14.0",
     "@vitest/coverage-v8": "^2.0.0",
     "electron": "^31.0.0",
     "electron-builder": "^24.13.3",
+    "jsdom": "^29.1.1",
     "typescript": "^5.5.0",
     "vitest": "^2.0.0"
   },
@@ -34,25 +36,37 @@
       "assets/**"
     ],
     "extraResources": [
-      { "from": "assets/icon.png", "to": "assets/icon.png" }
+      {
+        "from": "assets/icon.png",
+        "to": "assets/icon.png"
+      }
     ],
     "artifactName": "${name}-${version}-${os}.${ext}",
     "win": {
       "target": "nsis",
       "extraResources": [
-        { "from": "backend-bin/windows/workboard-backend.exe", "to": "backend/workboard-backend.exe" }
+        {
+          "from": "backend-bin/windows/workboard-backend.exe",
+          "to": "backend/workboard-backend.exe"
+        }
       ]
     },
     "mac": {
       "target": "dmg",
       "extraResources": [
-        { "from": "backend-bin/mac/workboard-backend", "to": "backend/workboard-backend" }
+        {
+          "from": "backend-bin/mac/workboard-backend",
+          "to": "backend/workboard-backend"
+        }
       ]
     },
     "linux": {
       "target": "AppImage",
       "extraResources": [
-        { "from": "backend-bin/linux/workboard-backend", "to": "backend/workboard-backend" }
+        {
+          "from": "backend-bin/linux/workboard-backend",
+          "to": "backend/workboard-backend"
+        }
       ]
     }
   }

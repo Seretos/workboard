@@ -11,6 +11,14 @@ interface TicketRow {
   provider: string;
   project_id: string;
   project_path: string;
+  // Optional: backend may return null or omit the field entirely for tickets
+  // without a linked PR; both are treated the same (no PR accent).
+  pull_request?: {
+    number: number;
+    url: string;
+    status: string;
+    draft: boolean;
+  } | null;
 }
 
 function setStatus(text: string): void {
@@ -20,40 +28,75 @@ function setStatus(text: string): void {
 
 function renderTickets(list: HTMLElement, tickets: TicketRow[]): void {
   list.replaceChildren();
+
+  // Pass 1: group tickets by project_id, preserving insertion order.
+  const groups = new Map<string, TicketRow[]>();
   for (const ticket of tickets) {
-    const li = document.createElement("li");
-    li.className = "ticket-card";
+    const key = ticket.project_id ?? "";
+    const existing = groups.get(key);
+    if (existing) {
+      existing.push(ticket);
+    } else {
+      groups.set(key, [ticket]);
+    }
+  }
 
-    // Card head: provider badge + ticket id
-    const head = document.createElement("div");
-    head.className = "card-head";
+  // Pass 2: for each group render a project heading followed by its cards.
+  for (const [, groupTickets] of groups) {
+    // Project group header: label + per-group count badge.
+    const headerLi = document.createElement("li");
+    headerLi.className = "project-group-header";
 
-    const providerSpan = document.createElement("span");
-    providerSpan.className = "card-provider";
-    providerSpan.textContent = ticket.provider ?? "";
+    const headerText = document.createElement("span");
+    headerText.className = "group-label";
+    headerText.textContent = groupTickets[0].project_path ?? "";
 
-    const idSpan = document.createElement("span");
-    idSpan.className = "card-id";
-    idSpan.textContent = ticket.id ? `#${ticket.id}` : "";
+    const countBadge = document.createElement("span");
+    countBadge.className = "group-count";
+    countBadge.textContent = String(groupTickets.length);
 
-    head.appendChild(providerSpan);
-    head.appendChild(idSpan);
+    headerLi.appendChild(headerText);
+    headerLi.appendChild(countBadge);
+    list.appendChild(headerLi);
 
-    // Card title: the ticket's title
-    const titleDiv = document.createElement("div");
-    titleDiv.className = "card-title";
-    titleDiv.textContent = ticket.title ?? "";
+    // Ticket cards for this group.
+    for (const ticket of groupTickets) {
+      const li = document.createElement("li");
+      li.className = ticket.pull_request != null
+        ? "ticket-card ticket-card--has-pr"
+        : "ticket-card";
 
-    // Card meta: which project the ticket belongs to + its status
-    const metaDiv = document.createElement("div");
-    metaDiv.className = "card-meta";
-    const metaParts = [ticket.project_path, ticket.status].filter(Boolean);
-    metaDiv.textContent = metaParts.join(" · ");
+      // Card head: provider badge + ticket id
+      const head = document.createElement("div");
+      head.className = "card-head";
 
-    li.appendChild(head);
-    li.appendChild(titleDiv);
-    li.appendChild(metaDiv);
-    list.appendChild(li);
+      const providerSpan = document.createElement("span");
+      providerSpan.className = "card-provider";
+      providerSpan.textContent = ticket.provider ?? "";
+
+      const idSpan = document.createElement("span");
+      idSpan.className = "card-id";
+      idSpan.textContent = ticket.id ? `#${ticket.id}` : "";
+
+      head.appendChild(providerSpan);
+      head.appendChild(idSpan);
+
+      // Card title: the ticket's title
+      const titleDiv = document.createElement("div");
+      titleDiv.className = "card-title";
+      titleDiv.textContent = ticket.title ?? "";
+
+      // Card meta: which project the ticket belongs to + its status
+      const metaDiv = document.createElement("div");
+      metaDiv.className = "card-meta";
+      const metaParts = [ticket.project_path, ticket.status].filter(Boolean);
+      metaDiv.textContent = metaParts.join(" · ");
+
+      li.appendChild(head);
+      li.appendChild(titleDiv);
+      li.appendChild(metaDiv);
+      list.appendChild(li);
+    }
   }
 }
 
@@ -87,4 +130,17 @@ async function loadTickets(): Promise<void> {
   setStatus(tickets.length === 0 ? "Keine offenen Tickets" : "");
 }
 
-loadTickets();
+// Only auto-run when the Electron preload has injected window.backend.
+// In test environments (jsdom without a preload) this guard prevents a crash.
+if (typeof window !== "undefined" && window.backend) {
+  loadTickets();
+}
+
+// Expose functions for unit tests via a CommonJS-style guard that is safe in a
+// classic <script> context: `typeof module` never throws even when `module` is
+// not declared, so in the browser this block is simply skipped at runtime.
+// tsc emits this verbatim (no `exports.` preamble) because there are no
+// top-level `export` declarations above.
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = { setStatus, renderTickets, loadTickets };
+}
