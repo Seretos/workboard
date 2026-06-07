@@ -11,4 +11,9 @@ interface Window {
     ) => Promise<{ ok: boolean; status: number; data: unknown }>;
     onBackendCrashed: (cb: (code: number | null) => void) => void;
   };
+  detail: {
+    openTicketDetail: (ticket: unknown) => void;
+    onTicketDetailData: (cb: (ticket: unknown) => void) => void;
+    openExternal: (url: string) => Promise<void>;
+  };
 }

@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Ticket Detail</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="panel-header">
+      <span id="detail-title" class="panel-title"></span>
+    </header>
+    <div class="detail-body">
+      <p id="detail-body" class="detail-description"></p>
+      <a id="detail-gh-link" class="detail-link" href="#">Open on GitHub</a>
+      <div id="detail-pr-section" class="detail-pr-section" style="display:none">
+        <a id="detail-pr-link" class="detail-link" href="#">Pull Request</a>
+        <span id="detail-pr-status" class="card-provider"></span>
+      </div>
+    </div>
+    <!-- detail.ts compiles to dist/renderer/detail.js; this page is loaded
+         from dist/renderer/detail.html so the relative path is just the basename. -->
+    <script src="detail.js"></script>
+  </body>
+</html>

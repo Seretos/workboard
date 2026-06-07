@@ -34,3 +34,18 @@ contextBridge.exposeInMainWorld("backend", {
     ipcRenderer.on("backend-crashed", (_event, code) => cb(code as number | null));
   },
 });
+
+// Ticket detail window bridge — opens the detail panel and receives data from
+// main. Kept as a separate contextBridge surface so detail.html can consume
+// just this surface without pulling in the full backend surface.
+contextBridge.exposeInMainWorld("detail", {
+  openTicketDetail: (ticket: unknown): void => {
+    ipcRenderer.send("open-ticket-detail", ticket);
+  },
+  onTicketDetailData: (cb: (ticket: unknown) => void): void => {
+    ipcRenderer.on("ticket-detail-data", (_event, ticket) => cb(ticket));
+  },
+  openExternal: (url: string): Promise<void> => {
+    return ipcRenderer.invoke("open-external", url);
+  },
+});

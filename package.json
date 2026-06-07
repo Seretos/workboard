@@ -6,7 +6,7 @@
   "license": "MIT",
   "main": "dist/main/main.js",
   "scripts": {
-    "build": "tsc --project frontend/tsconfig.json && node -e \"const fs=require('fs');const path=require('path');const src='frontend/src/renderer';const dst='dist/renderer';fs.mkdirSync(dst,{recursive:true});['index.html','styles.css'].forEach(f=>fs.copyFileSync(path.join(src,f),path.join(dst,f)))\"",
+    "build": "tsc --project frontend/tsconfig.json && node -e \"const fs=require('fs');const path=require('path');const src='frontend/src/renderer';const dst='dist/renderer';fs.mkdirSync(dst,{recursive:true});['index.html','detail.html','styles.css'].forEach(f=>fs.copyFileSync(path.join(src,f),path.join(dst,f)))\"",
     "start": "electron .",
     "test": "vitest run",
     "dist": "electron-builder",

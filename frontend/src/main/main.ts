@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, screen, Tray, Menu } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, screen, shell, Tray, Menu } from "electron";
 import * as path from "path";
 import * as fs from "fs";
 import * as readline from "readline";
@@ -10,6 +10,13 @@ let backendPort: number | null = null;
 
 // Module-level tray reference — must persist to avoid GC collection.
 let tray: Tray | null = null;
+
+// Module-level detail window reference — reused on every card click.
+let detailWin: BrowserWindow | null = null;
+
+// Buffer for a ticket that arrived while the detail window was still loading.
+// At most one pending ticket is kept — a second click while loading replaces it.
+let pendingDetailTicket: unknown = null;
 
 // Set to true when a real quit is in progress so the close handler does not
 // intercept and hide the window instead of letting Electron destroy it.
@@ -172,6 +179,44 @@ ipcMain.handle("appInfo.getVersion", () => {
   return app.getVersion();
 });
 
+// Show the detail window with the clicked ticket's data. The window is created
+// eagerly in bootstrap() so this handler just pushes data and un-hides it.
+//
+// Guard against the first-click race: loadFile() is async, so the renderer
+// may not have registered its listener yet. When the page is still loading we
+// buffer the ticket and deliver it via did-finish-load instead of sending now.
+// A second click while still loading overwrites the buffered ticket so only the
+// most-recent data is delivered — we replace pendingDetailTicket and let the
+// already-registered once() listener pick it up; no second listener is added.
+ipcMain.on("open-ticket-detail", (_event, ticket) => {
+  if (!detailWin) {
+    detailWin = createDetailWindow();
+  }
+  if (detailWin.webContents.isLoading()) {
+    // If no listener is registered yet (first click while loading), add one.
+    // If one was already registered (second click while loading), just replace
+    // the buffered ticket — the existing once() will deliver the updated value.
+    const needsListener = pendingDetailTicket === null;
+    pendingDetailTicket = ticket;
+    if (needsListener) {
+      detailWin.webContents.once("did-finish-load", () => {
+        const t = pendingDetailTicket;
+        pendingDetailTicket = null;
+        detailWin?.webContents.send("ticket-detail-data", t);
+        detailWin?.show();
+      });
+    }
+  } else {
+    detailWin.webContents.send("ticket-detail-data", ticket);
+    detailWin.show();
+  }
+});
+
+// Open a URL in the system browser — never navigate the renderer itself.
+ipcMain.handle("open-external", (_event, url: string) => {
+  return shell.openExternal(url);
+});
+
 // ---------------------------------------------------------------------------
 // Window creation — right-docked Referenz panel, hidden by default.
 // Uses workArea (not workAreaSize) so x/y account for taskbar position and
@@ -215,9 +260,61 @@ export function createWindow(): BrowserWindow {
 }
 
 // ---------------------------------------------------------------------------
-// Tray creation — exported for testability.
+// Detail window — left-docked next to the panel, hidden by default.
+// Reused across card clicks so it is created eagerly in bootstrap().
+// Uses the same workArea geometry as createWindow() to stay aligned.
 // ---------------------------------------------------------------------------
-export function createTray(win: BrowserWindow): Tray {
+export function createDetailWindow(): BrowserWindow {
+  const { x: waX, y: waY, width: waWidth, height: waHeight } =
+    screen.getPrimaryDisplay().workArea;
+  const panelWidth = 360;
+  const detailWidth = 480;
+  const win = new BrowserWindow({
+    width: detailWidth,
+    height: waHeight,
+    x: waX + waWidth - panelWidth - detailWidth,
+    y: waY,
+    frame: false,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    resizable: false,
+    show: false,
+    icon: resolveIconPath(),
+    webPreferences: {
+      preload: path.join(__dirname, "preload.js"),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+
+  // Mirror the panel's close behaviour: hide instead of destroy so the tray
+  // keeps the app alive. Let it through only when a real quit is in progress.
+  win.on("close", (event) => {
+    if (!isQuitting) {
+      event.preventDefault();
+      win.hide();
+    }
+  });
+
+  win.loadFile(path.join(__dirname, "../renderer/detail.html"));
+  return win;
+}
+
+// ---------------------------------------------------------------------------
+// Tray creation — exported for testability.
+//
+// getDetailWin is an optional getter that returns the current detail window
+// (or null). When provided, the toggle also hides detailWin alongside the
+// main panel — preventing the detail window from remaining visible on screen
+// with no close affordance when the user hides the app via the tray.
+// On hide: detailWin is hidden unconditionally (if visible).
+// On show: the panel is restored; the user re-opens the detail by clicking a
+// card, matching the simplest coherent UX and the existing toggle code's style.
+// ---------------------------------------------------------------------------
+export function createTray(
+  win: BrowserWindow,
+  getDetailWin?: () => BrowserWindow | null
+): Tray {
   const t = new Tray(resolveIconPath());
   t.setToolTip("Workboard");
 
@@ -235,6 +332,11 @@ export function createTray(win: BrowserWindow): Tray {
   const toggle = () => {
     if (win.isVisible()) {
       win.hide();
+      // Also hide the detail window so it doesn't stay stranded on screen.
+      const dw = getDetailWin?.();
+      if (dw && dw.isVisible()) {
+        dw.hide();
+      }
     } else {
       win.show();
     }
@@ -265,7 +367,10 @@ async function bootstrap(): Promise<void> {
   }
 
   const win = createWindow();
-  tray = createTray(win);
+  // Eagerly create the detail window so the first card click has no perceptible
+  // delay — BrowserWindow creation is slow and must not block the click handler.
+  detailWin = createDetailWindow();
+  tray = createTray(win, () => detailWin);
 }
 
 // Window close only hides the panel — the tray keeps the app alive.
