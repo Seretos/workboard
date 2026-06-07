@@ -5,6 +5,9 @@ interface Window {
     getVersion: () => string;
   };
   backend: {
-    fetch: (path: string, init?: RequestInit) => Promise<Response>;
+    fetchJson: (
+      path: string,
+      init?: RequestInit
+    ) => Promise<{ ok: boolean; status: number; data: unknown }>;
   };
 }

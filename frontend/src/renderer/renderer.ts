@@ -67,11 +67,11 @@ async function loadTickets(): Promise<void> {
 
   let tickets: TicketRow[];
   try {
-    const response = await window.backend.fetch("/tickets");
+    const response = await window.backend.fetchJson("/tickets");
     if (!response.ok) {
       throw new Error(`Backend antwortete mit HTTP ${response.status}`);
     }
-    tickets = await response.json();
+    tickets = response.data as TicketRow[];
   } catch (err) {
     setStatus(`Fehler beim Laden: ${err instanceof Error ? err.message : String(err)}`);
     const countEl = document.getElementById("ticket-count");
