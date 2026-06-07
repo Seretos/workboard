@@ -25,12 +25,17 @@
   "build": {
     "appId": "com.seretos.workboard",
     "productName": "Workboard",
+    "icon": "assets/icon.png",
     "directories": {
       "output": "release"
     },
     "files": [
       "dist/**",
       "assets/**"
+    ],
+    "extraResources": [
+      { "from": "assets/icon.png", "to": "assets/icon.png" },
+      { "from": ".seretos", "to": ".seretos" }
     ],
     "artifactName": "${name}-${version}-${os}.${ext}",
     "win": {

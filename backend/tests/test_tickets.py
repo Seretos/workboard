@@ -78,3 +78,25 @@ def test_tickets_lib_error_returns_500() -> None:
     with patch("src.api.tickets.load_projects", side_effect=RuntimeError("config broken")):
         response = no_raise_client.get("/tickets")
     assert response.status_code == 500
+
+
+def test_tickets_load_projects_called_with_correct_filename() -> None:
+    """GET /tickets calls load_projects with config_filename='projects.yml'."""
+    mock_load = MagicMock(return_value=_make_result([_sample_project()]))
+    with patch("src.api.tickets.load_projects", mock_load):
+        client.get("/tickets")
+    mock_load.assert_called_once_with(
+        config_filename="projects.yml",
+        config_filename_alt="projects.yaml",
+    )
+
+
+def test_tickets_file_not_found_returns_500() -> None:
+    """GET /tickets when load_projects raises FileNotFoundError returns HTTP 500."""
+    no_raise_client = TestClient(app, raise_server_exceptions=False)
+    with patch(
+        "src.api.tickets.load_projects",
+        side_effect=FileNotFoundError("projects.yml not found"),
+    ):
+        response = no_raise_client.get("/tickets")
+    assert response.status_code == 500

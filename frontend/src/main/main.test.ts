@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import * as path from "path";
+import * as fs from "fs";
 
 // ---------------------------------------------------------------------------
 // Mock the `electron` module so importing main.ts doesn't need a real Electron
@@ -48,6 +49,34 @@ vi.mock("electron", () => {
     },
   };
 });
+
+// ---------------------------------------------------------------------------
+// Mock fs so spawnBackend tests can control existsSync without real filesystem.
+// ---------------------------------------------------------------------------
+vi.mock("fs", () => ({
+  existsSync: vi.fn(() => true),
+}));
+
+// ---------------------------------------------------------------------------
+// Mock child_process so spawnBackend tests don't actually spawn a process.
+// ---------------------------------------------------------------------------
+vi.mock("child_process", () => ({
+  spawn: vi.fn(() => ({
+    stdout: { on: vi.fn() },
+    stderr: { on: vi.fn() },
+    on: vi.fn(),
+  })),
+}));
+
+// ---------------------------------------------------------------------------
+// Mock readline so the rl.on("line") wiring in spawnBackend does not crash.
+// ---------------------------------------------------------------------------
+vi.mock("readline", () => ({
+  createInterface: vi.fn(() => ({
+    on: vi.fn(),
+    close: vi.fn(),
+  })),
+}));
 
 // ---------------------------------------------------------------------------
 // Helper: import resolveBackendBinary with a controlled app.isPackaged value.
@@ -498,5 +527,139 @@ describe("createTray", () => {
     const TrayCtor = electron.Tray as unknown as ReturnType<typeof vi.fn>;
     const trayInstance = TrayCtor.mock.results[TrayCtor.mock.results.length - 1].value;
     expect(trayInstance.setToolTip).toHaveBeenCalledWith("Workboard");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveIconPath
+// ---------------------------------------------------------------------------
+describe("resolveIconPath", () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  it("dev mode → path ends with assets/icon.png", async () => {
+    const electron = await import("electron");
+    // @ts-ignore
+    electron.app.isPackaged = false;
+
+    const { resolveIconPath } = await import("./main.js");
+    const result = resolveIconPath();
+
+    expect(result.replace(/\\/g, "/")).toMatch(/assets\/icon\.png$/);
+  });
+
+  it("packaged mode → equals path.join(process.resourcesPath, 'assets', 'icon.png')", async () => {
+    // NOTE: this path is only valid at runtime because package.json extraResources
+    // includes { "from": "assets/icon.png", "to": "assets/icon.png" }.  If that
+    // entry is ever removed, the tray/window icon will silently break in packaged
+    // builds even though this test still passes.
+    const electron = await import("electron");
+    // @ts-ignore
+    electron.app.isPackaged = true;
+
+    Object.defineProperty(process, "resourcesPath", {
+      value: "/Applications/Workboard.app/Contents/Resources",
+      configurable: true,
+    });
+
+    const { resolveIconPath } = await import("./main.js");
+    const result = resolveIconPath();
+
+    expect(result).toBe(
+      path.join(
+        "/Applications/Workboard.app/Contents/Resources",
+        "assets",
+        "icon.png"
+      )
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveProjectsConfigPath
+// ---------------------------------------------------------------------------
+describe("resolveProjectsConfigPath", () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  it("dev mode → path ends with .seretos/projects.yml", async () => {
+    const electron = await import("electron");
+    // @ts-ignore
+    electron.app.isPackaged = false;
+
+    const { resolveProjectsConfigPath } = await import("./main.js");
+    const result = resolveProjectsConfigPath();
+
+    expect(result.replace(/\\/g, "/")).toMatch(/\.seretos\/projects\.yml$/);
+  });
+
+  it("packaged mode → equals path.join(process.resourcesPath, '.seretos', 'projects.yml')", async () => {
+    const electron = await import("electron");
+    // @ts-ignore
+    electron.app.isPackaged = true;
+
+    Object.defineProperty(process, "resourcesPath", {
+      value: "/Applications/Workboard.app/Contents/Resources",
+      configurable: true,
+    });
+
+    const { resolveProjectsConfigPath } = await import("./main.js");
+    const result = resolveProjectsConfigPath();
+
+    expect(result).toBe(
+      path.join(
+        "/Applications/Workboard.app/Contents/Resources",
+        ".seretos",
+        "projects.yml"
+      )
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// spawnBackend — env wiring
+// ---------------------------------------------------------------------------
+describe("spawnBackend", () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  it("spawn is called with env containing PROJECT_ISSUES_CONFIG equal to resolveProjectsConfigPath()", async () => {
+    const electron = await import("electron");
+    // @ts-ignore
+    electron.app.isPackaged = false;
+
+    Object.defineProperty(process, "platform", { value: "linux", configurable: true });
+
+    // fs.existsSync must return true so spawnBackend doesn't reject early.
+    const fsMock = await import("fs");
+    (fsMock.existsSync as ReturnType<typeof vi.fn>).mockReturnValue(true);
+
+    const cpMock = await import("child_process");
+    const fakeChild = {
+      stdout: { on: vi.fn() },
+      stderr: { on: vi.fn() },
+      on: vi.fn(),
+    };
+    (cpMock.spawn as ReturnType<typeof vi.fn>).mockReturnValue(fakeChild);
+
+    const { spawnBackend, resolveProjectsConfigPath } = await import("./main.js");
+    const expectedConfigPath = resolveProjectsConfigPath();
+
+    // Start but don't await — handshake never resolves in this test; we only
+    // care that spawn was called with the right options.
+    spawnBackend().catch(() => {});
+
+    expect(cpMock.spawn).toHaveBeenCalledWith(
+      expect.any(String),
+      [],
+      expect.objectContaining({
+        env: expect.objectContaining({
+          PROJECT_ISSUES_CONFIG: expectedConfigPath,
+        }),
+      })
+    );
   });
 });
