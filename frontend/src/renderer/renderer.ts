@@ -13,13 +13,13 @@ interface TicketRow {
   project_path: string;
 }
 
-async function loadTickets(): Promise<void> {
-  const response = await window.backend.fetch("/tickets");
-  const tickets: TicketRow[] = await response.json();
+function setStatus(text: string): void {
+  const bar = document.querySelector(".status-bar");
+  if (bar) bar.textContent = text;
+}
 
-  const list = document.getElementById("ticket-list");
-  if (!list) return;
-
+function renderTickets(list: HTMLElement, tickets: TicketRow[]): void {
+  list.replaceChildren();
   for (const ticket of tickets) {
     const li = document.createElement("li");
     li.className = "ticket-card";
@@ -55,12 +55,36 @@ async function loadTickets(): Promise<void> {
     li.appendChild(metaDiv);
     list.appendChild(li);
   }
+}
 
-  // Update ticket count badge
-  const countEl = document.getElementById("ticket-count");
-  if (countEl) {
-    countEl.textContent = String(tickets.length);
+async function loadTickets(): Promise<void> {
+  const list = document.getElementById("ticket-list");
+  if (!list) return;
+
+  // The backend fans out a provider call per project, so the first paint
+  // can take a couple of seconds — show progress instead of a blank panel.
+  setStatus("Lädt Tickets…");
+
+  let tickets: TicketRow[];
+  try {
+    const response = await window.backend.fetch("/tickets");
+    if (!response.ok) {
+      throw new Error(`Backend antwortete mit HTTP ${response.status}`);
+    }
+    tickets = await response.json();
+  } catch (err) {
+    setStatus(`Fehler beim Laden: ${err instanceof Error ? err.message : String(err)}`);
+    const countEl = document.getElementById("ticket-count");
+    if (countEl) countEl.textContent = "!";
+    return;
   }
+
+  renderTickets(list, tickets);
+
+  const countEl = document.getElementById("ticket-count");
+  if (countEl) countEl.textContent = String(tickets.length);
+
+  setStatus(tickets.length === 0 ? "Keine offenen Tickets" : "");
 }
 
 loadTickets();
