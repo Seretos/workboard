@@ -595,26 +595,15 @@ describe("resolveProjectsConfigPath", () => {
     expect(result.replace(/\\/g, "/")).toMatch(/\.seretos\/projects\.yml$/);
   });
 
-  it("packaged mode → equals path.join(process.resourcesPath, '.seretos', 'projects.yml')", async () => {
+  it("packaged mode → null (backend falls through to ~/.seretos/projects.yml)", async () => {
     const electron = await import("electron");
     // @ts-ignore
     electron.app.isPackaged = true;
 
-    Object.defineProperty(process, "resourcesPath", {
-      value: "/Applications/Workboard.app/Contents/Resources",
-      configurable: true,
-    });
-
     const { resolveProjectsConfigPath } = await import("./main.js");
     const result = resolveProjectsConfigPath();
 
-    expect(result).toBe(
-      path.join(
-        "/Applications/Workboard.app/Contents/Resources",
-        ".seretos",
-        "projects.yml"
-      )
-    );
+    expect(result).toBeNull();
   });
 });
 
@@ -661,5 +650,32 @@ describe("spawnBackend", () => {
         }),
       })
     );
+  });
+
+  it("packaged mode → spawn env does NOT set PROJECT_ISSUES_CONFIG", async () => {
+    const electron = await import("electron");
+    // @ts-ignore
+    electron.app.isPackaged = true;
+
+    Object.defineProperty(process, "platform", { value: "linux", configurable: true });
+
+    const fsMock = await import("fs");
+    (fsMock.existsSync as ReturnType<typeof vi.fn>).mockReturnValue(true);
+
+    const cpMock = await import("child_process");
+    const fakeChild = {
+      stdout: { on: vi.fn() },
+      stderr: { on: vi.fn() },
+      on: vi.fn(),
+    };
+    // Reset first so call history from earlier tests doesn't bleed in.
+    (cpMock.spawn as ReturnType<typeof vi.fn>).mockReset();
+    (cpMock.spawn as ReturnType<typeof vi.fn>).mockReturnValue(fakeChild);
+
+    const { spawnBackend } = await import("./main.js");
+    spawnBackend().catch(() => {});
+
+    const spawnEnv = (cpMock.spawn as ReturnType<typeof vi.fn>).mock.calls[0][2].env;
+    expect(spawnEnv).not.toHaveProperty("PROJECT_ISSUES_CONFIG");
   });
 });

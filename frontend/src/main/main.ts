@@ -30,15 +30,27 @@ export function resolveIconPath(): string {
 
 // ---------------------------------------------------------------------------
 // resolveProjectsConfigPath — pure, no side effects, fully testable.
+//
+// Returns the config file to pin via PROJECT_ISSUES_CONFIG, or null to let
+// the backend resolve it itself.
+//
+//   - Development: pin the repo-local `.seretos/projects.yml` so running
+//     the board from this checkout uses the in-repo (read-only) project
+//     list regardless of the launch CWD.
+//   - Packaged: return null. The installed app is a personal cross-project
+//     board started outside any git repo, so the backend falls through to
+//     the user-level `~/.seretos/projects.yml` (the lib's home default).
+//     We deliberately do NOT bundle/ship a config — every user supplies
+//     their own project list.
 // ---------------------------------------------------------------------------
-export function resolveProjectsConfigPath(): string {
+export function resolveProjectsConfigPath(): string | null {
   if (!app.isPackaged) {
     // Development: .seretos/ is at repo root (two up from dist/main/)
     return path.join(__dirname, "../../.seretos/projects.yml");
   }
 
-  // Packaged: electron-builder copies .seretos/ via extraResources
-  return path.join(process.resourcesPath, ".seretos", "projects.yml");
+  // Packaged: no override — backend uses ~/.seretos/projects.yml.
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -90,9 +102,19 @@ export function spawnBackend(): Promise<number> {
       return;
     }
 
+    // Pin the config only when resolveProjectsConfigPath returns a path
+    // (dev). In the packaged app it returns null, so we leave
+    // PROJECT_ISSUES_CONFIG unset and the backend falls through to the
+    // user-level ~/.seretos/projects.yml.
+    const configPath = resolveProjectsConfigPath();
+    const childEnv = { ...process.env };
+    if (configPath !== null) {
+      childEnv.PROJECT_ISSUES_CONFIG = configPath;
+    }
+
     const child = spawn(binaryPath, [], {
       stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, PROJECT_ISSUES_CONFIG: resolveProjectsConfigPath() },
+      env: childEnv,
     });
     backendChild = child;
 
