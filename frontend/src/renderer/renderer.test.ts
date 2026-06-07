@@ -12,6 +12,7 @@ function makeTicket(overrides: {
   title?: string;
   status?: string;
   url?: string;
+  body?: string;
   labels?: string[];
   provider?: string;
   project_id: string;
@@ -23,6 +24,7 @@ function makeTicket(overrides: {
     title: overrides.title ?? "Test ticket",
     status: overrides.status ?? "open",
     url: overrides.url ?? "https://example.com",
+    body: overrides.body,
     labels: overrides.labels ?? [],
     provider: overrides.provider ?? "github",
     project_id: overrides.project_id,
@@ -286,6 +288,95 @@ describe("renderTickets — edge cases", () => {
 
     const card = list.querySelector(".ticket-card");
     expect(card!.classList.contains("ticket-card--has-pr")).toBe(true);
+
+    cleanup(list);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// renderTickets — card click opens detail window
+// ---------------------------------------------------------------------------
+
+describe("renderTickets — card click", () => {
+  let openTicketDetail: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    openTicketDetail = vi.fn();
+    (window as Window & typeof globalThis).detail = {
+      openTicketDetail,
+      onTicketDetailData: vi.fn(),
+      openExternal: vi.fn(),
+    };
+  });
+
+  it("clicking a ticket card calls window.detail.openTicketDetail with the ticket", () => {
+    const list = makeList();
+    const ticket = makeTicket({ id: "42", project_id: "proj-a", project_path: "/repos/alpha" });
+    renderTickets(list, [ticket]);
+
+    const card = list.querySelector(".ticket-card") as HTMLElement;
+    expect(card).not.toBeNull();
+    card.click();
+
+    expect(openTicketDetail).toHaveBeenCalledTimes(1);
+    expect(openTicketDetail).toHaveBeenCalledWith(ticket);
+
+    cleanup(list);
+  });
+
+  it("clicking a card passes the body field to openTicketDetail", () => {
+    const list = makeList();
+    const ticket = makeTicket({
+      id: "7",
+      body: "This is the ticket description.",
+      project_id: "proj-a",
+      project_path: "/repos/alpha",
+    });
+    renderTickets(list, [ticket]);
+
+    const card = list.querySelector(".ticket-card") as HTMLElement;
+    card.click();
+
+    const arg = openTicketDetail.mock.calls[0][0] as { body?: string };
+    expect(arg.body).toBe("This is the ticket description.");
+
+    cleanup(list);
+  });
+
+  it("clicking a card passes the pull_request field to openTicketDetail", () => {
+    const list = makeList();
+    const pr = { number: 10, url: "https://github.com/x/y/pull/10", status: "open", draft: false };
+    const ticket = makeTicket({
+      id: "10",
+      project_id: "proj-a",
+      project_path: "/repos/alpha",
+      pull_request: pr,
+    });
+    renderTickets(list, [ticket]);
+
+    const card = list.querySelector(".ticket-card") as HTMLElement;
+    card.click();
+
+    const arg = openTicketDetail.mock.calls[0][0] as { pull_request: typeof pr };
+    expect(arg.pull_request).toEqual(pr);
+
+    cleanup(list);
+  });
+
+  it("each card in a multi-card list calls openTicketDetail with its own ticket", () => {
+    const list = makeList();
+    const t1 = makeTicket({ id: "1", project_id: "proj-a", project_path: "/repos/alpha" });
+    const t2 = makeTicket({ id: "2", project_id: "proj-a", project_path: "/repos/alpha" });
+    renderTickets(list, [t1, t2]);
+
+    const cards = list.querySelectorAll(".ticket-card") as NodeListOf<HTMLElement>;
+    expect(cards).toHaveLength(2);
+
+    cards[0].click();
+    expect(openTicketDetail).toHaveBeenLastCalledWith(t1);
+
+    cards[1].click();
+    expect(openTicketDetail).toHaveBeenLastCalledWith(t2);
 
     cleanup(list);
   });

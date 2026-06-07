@@ -23,7 +23,11 @@ vi.mock("electron", () => {
       hide: vi.fn(),
       // on() records handlers so tests can retrieve and invoke them.
       on: vi.fn(),
-      webContents: { send: vi.fn() },
+      webContents: {
+        send: vi.fn(),
+        isLoading: vi.fn(() => false),
+        once: vi.fn(),
+      },
       getAllWindows: vi.fn(() => []),
     })),
     // Each Tray() call gets its own fresh instance so tests don't share state.
@@ -40,6 +44,10 @@ vi.mock("electron", () => {
     },
     ipcMain: {
       handle: vi.fn(),
+      on: vi.fn(),
+    },
+    shell: {
+      openExternal: vi.fn(() => Promise.resolve()),
     },
     screen: {
       // Return workArea (x/y/width/height) used by the right-dock calculation.
@@ -609,6 +617,175 @@ describe("resolveProjectsConfigPath", () => {
 });
 
 // ---------------------------------------------------------------------------
+// createDetailWindow — geometry and window traits
+// ---------------------------------------------------------------------------
+describe("createDetailWindow", () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  it("constructs BrowserWindow with width 480 (detailWidth)", async () => {
+    const electron = await import("electron");
+
+    const { createDetailWindow } = await import("./main.js");
+    createDetailWindow();
+
+    expect(electron.BrowserWindow).toHaveBeenCalledWith(
+      expect.objectContaining({ width: 480 })
+    );
+  });
+
+  it("constructs BrowserWindow with height from workArea (1080)", async () => {
+    const electron = await import("electron");
+
+    const { createDetailWindow } = await import("./main.js");
+    createDetailWindow();
+
+    expect(electron.BrowserWindow).toHaveBeenCalledWith(
+      expect.objectContaining({ height: 1080 })
+    );
+  });
+
+  it("x is left of the panel: waX + waWidth - panelWidth - detailWidth = 1920 - 360 - 480 = 1080", async () => {
+    const electron = await import("electron");
+    // Default mock: workArea { x:0, y:0, width:1920, height:1080 }
+    // x = 0 + 1920 - 360 - 480 = 1080
+
+    const { createDetailWindow } = await import("./main.js");
+    createDetailWindow();
+
+    expect(electron.BrowserWindow).toHaveBeenCalledWith(
+      expect.objectContaining({ x: 1080 })
+    );
+  });
+
+  it("x accounts for non-zero workArea origin (x:100, width:1920 → 100 + 1920 - 360 - 480 = 1180)", async () => {
+    const electron = await import("electron");
+    (electron.screen.getPrimaryDisplay as ReturnType<typeof vi.fn>).mockReturnValueOnce({
+      workArea: { x: 100, y: 40, width: 1920, height: 1040 },
+    });
+
+    const { createDetailWindow } = await import("./main.js");
+    createDetailWindow();
+
+    expect(electron.BrowserWindow).toHaveBeenCalledWith(
+      expect.objectContaining({ x: 1180, y: 40, height: 1040 })
+    );
+  });
+
+  it("frame is false (frameless)", async () => {
+    const electron = await import("electron");
+
+    const { createDetailWindow } = await import("./main.js");
+    createDetailWindow();
+
+    expect(electron.BrowserWindow).toHaveBeenCalledWith(
+      expect.objectContaining({ frame: false })
+    );
+  });
+
+  it("alwaysOnTop is true", async () => {
+    const electron = await import("electron");
+
+    const { createDetailWindow } = await import("./main.js");
+    createDetailWindow();
+
+    expect(electron.BrowserWindow).toHaveBeenCalledWith(
+      expect.objectContaining({ alwaysOnTop: true })
+    );
+  });
+
+  it("skipTaskbar is true", async () => {
+    const electron = await import("electron");
+
+    const { createDetailWindow } = await import("./main.js");
+    createDetailWindow();
+
+    expect(electron.BrowserWindow).toHaveBeenCalledWith(
+      expect.objectContaining({ skipTaskbar: true })
+    );
+  });
+
+  it("resizable is false", async () => {
+    const electron = await import("electron");
+
+    const { createDetailWindow } = await import("./main.js");
+    createDetailWindow();
+
+    expect(electron.BrowserWindow).toHaveBeenCalledWith(
+      expect.objectContaining({ resizable: false })
+    );
+  });
+
+  it("show is false (hidden by default)", async () => {
+    const electron = await import("electron");
+
+    const { createDetailWindow } = await import("./main.js");
+    createDetailWindow();
+
+    expect(electron.BrowserWindow).toHaveBeenCalledWith(
+      expect.objectContaining({ show: false })
+    );
+  });
+
+  it("close handler calls event.preventDefault() and win.hide() when not quitting", async () => {
+    const electron = await import("electron");
+
+    const { createDetailWindow } = await import("./main.js");
+    const win = createDetailWindow();
+
+    const onSpy = win.on as ReturnType<typeof vi.fn>;
+    const closeCall = onSpy.mock.calls.find((c: unknown[]) => c[0] === "close");
+    expect(closeCall).toBeDefined();
+
+    const fakeEvent = { preventDefault: vi.fn() };
+    (closeCall![1] as (e: typeof fakeEvent) => void)(fakeEvent);
+
+    expect(fakeEvent.preventDefault).toHaveBeenCalled();
+    expect(win.hide).toHaveBeenCalled();
+  });
+
+  it("close handler does NOT prevent default when app is quitting", async () => {
+    const electron = await import("electron");
+
+    const { createDetailWindow, createTray, createWindow } = await import("./main.js");
+    const panelWin = createWindow();
+    const detailWin = createDetailWindow();
+
+    // Trigger isQuitting via the Beenden menu item.
+    const MenuMock = electron.Menu as unknown as { buildFromTemplate: ReturnType<typeof vi.fn> };
+    createTray(panelWin as any);
+    const lastTemplate = MenuMock.buildFromTemplate.mock.calls[
+      MenuMock.buildFromTemplate.mock.calls.length - 1
+    ][0] as Array<{ label: string; click: () => void }>;
+    const beendenItem = lastTemplate.find((item) => item.label === "Beenden");
+    beendenItem!.click();
+
+    const onSpy = detailWin.on as ReturnType<typeof vi.fn>;
+    const closeCall = onSpy.mock.calls.find((c: unknown[]) => c[0] === "close");
+    expect(closeCall).toBeDefined();
+
+    const fakeEvent = { preventDefault: vi.fn() };
+    (closeCall![1] as (e: typeof fakeEvent) => void)(fakeEvent);
+
+    expect(fakeEvent.preventDefault).not.toHaveBeenCalled();
+  });
+
+  it("ipcMain.on is called with 'open-ticket-detail'", async () => {
+    const electron = await import("electron");
+
+    // Import the module — module-level ipcMain.on calls fire on import.
+    await import("./main.js");
+
+    const ipcMainMock = electron.ipcMain as unknown as { on: ReturnType<typeof vi.fn> };
+    const registeredChannels: string[] = ipcMainMock.on.mock.calls.map(
+      (c: unknown[]) => c[0] as string
+    );
+    expect(registeredChannels).toContain("open-ticket-detail");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // spawnBackend — env wiring
 // ---------------------------------------------------------------------------
 describe("spawnBackend", () => {
@@ -678,5 +855,281 @@ describe("spawnBackend", () => {
 
     const spawnEnv = (cpMock.spawn as ReturnType<typeof vi.fn>).mock.calls[0][2].env;
     expect(spawnEnv).not.toHaveProperty("PROJECT_ISSUES_CONFIG");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// open-ticket-detail IPC handler — Finding 1: readiness guard
+//
+// The handler is registered at module-level via ipcMain.on. We use a fresh
+// module import per test (vi.resetModules() in beforeEach) and always pick the
+// LAST registered handler so we get the one from the current import, not a
+// stale one accumulated from earlier tests. The BrowserWindow mock is primed
+// before invoking the handler because the handler calls createDetailWindow()
+// (new BrowserWindow()) lazily on first use.
+// ---------------------------------------------------------------------------
+describe("open-ticket-detail IPC handler (readiness guard)", () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  // Build a BrowserWindow fake with controllable isLoading().
+  function makeFakeWindow(isLoadingReturnValue: boolean) {
+    return {
+      loadFile: vi.fn(),
+      isDestroyed: vi.fn(() => false),
+      isVisible: vi.fn(() => false),
+      show: vi.fn(),
+      hide: vi.fn(),
+      on: vi.fn(),
+      webContents: {
+        send: vi.fn(),
+        isLoading: vi.fn(() => isLoadingReturnValue),
+        once: vi.fn(),
+      },
+    };
+  }
+
+  // Import a fresh module and extract the LAST "open-ticket-detail" handler.
+  // "Last" is correct because vi.resetModules() + re-import means the mock's
+  // call list grows by one entry per test; the handler we want is always the
+  // newest (last) one.
+  async function importAndGetHandler() {
+    const electron = await import("electron");
+    const ipcMainMock = electron.ipcMain as unknown as {
+      on: ReturnType<typeof vi.fn>;
+    };
+
+    await import("./main.js");
+
+    const allCalls: unknown[][] = ipcMainMock.on.mock.calls;
+    // Walk backwards to find the most-recently registered "open-ticket-detail".
+    let handlerFn: ((_event: unknown, ticket: unknown) => void) | undefined;
+    for (let i = allCalls.length - 1; i >= 0; i--) {
+      if (allCalls[i][0] === "open-ticket-detail") {
+        handlerFn = allCalls[i][1] as (_event: unknown, ticket: unknown) => void;
+        break;
+      }
+    }
+    expect(handlerFn).toBeDefined();
+    return {
+      handler: handlerFn!,
+      BrowserWindowMock: electron.BrowserWindow as unknown as ReturnType<typeof vi.fn>,
+    };
+  }
+
+  it("when NOT loading: sends ticket-detail-data immediately and shows window", async () => {
+    const { handler, BrowserWindowMock } = await importAndGetHandler();
+
+    // Prime the mock BEFORE invoking the handler (handler calls new BrowserWindow()).
+    const fakeWin = makeFakeWindow(false);
+    BrowserWindowMock.mockImplementationOnce(() => fakeWin);
+
+    const ticket = { id: 1, title: "Ticket A" };
+    handler(null, ticket);
+
+    expect(fakeWin.webContents.send).toHaveBeenCalledWith("ticket-detail-data", ticket);
+    expect(fakeWin.show).toHaveBeenCalled();
+    // once() must NOT have been registered.
+    expect(fakeWin.webContents.once).not.toHaveBeenCalled();
+  });
+
+  it("when loading: does NOT send immediately and registers did-finish-load via once()", async () => {
+    const { handler, BrowserWindowMock } = await importAndGetHandler();
+
+    const fakeWin = makeFakeWindow(true);
+    BrowserWindowMock.mockImplementationOnce(() => fakeWin);
+
+    const ticket = { id: 2, title: "Ticket B" };
+    handler(null, ticket);
+
+    // Must not have sent yet.
+    expect(fakeWin.webContents.send).not.toHaveBeenCalled();
+    expect(fakeWin.show).not.toHaveBeenCalled();
+    // Must have registered a did-finish-load listener via once().
+    expect(fakeWin.webContents.once).toHaveBeenCalledWith(
+      "did-finish-load",
+      expect.any(Function)
+    );
+  });
+
+  it("when loading: did-finish-load callback sends the buffered ticket and shows the window", async () => {
+    const { handler, BrowserWindowMock } = await importAndGetHandler();
+
+    const fakeWin = makeFakeWindow(true);
+    BrowserWindowMock.mockImplementationOnce(() => fakeWin);
+
+    const ticket = { id: 3, title: "Ticket C" };
+    handler(null, ticket);
+
+    // Retrieve and fire the did-finish-load callback registered via once().
+    const onceCall = (fakeWin.webContents.once as ReturnType<typeof vi.fn>).mock.calls.find(
+      (c: unknown[]) => c[0] === "did-finish-load"
+    );
+    expect(onceCall).toBeDefined();
+    (onceCall![1] as () => void)();
+
+    expect(fakeWin.webContents.send).toHaveBeenCalledWith("ticket-detail-data", ticket);
+    expect(fakeWin.show).toHaveBeenCalled();
+  });
+
+  it("second click while loading overwrites pending ticket; only ONE once() listener is registered", async () => {
+    const { handler, BrowserWindowMock } = await importAndGetHandler();
+
+    // First call creates detailWin (new BrowserWindow). Subsequent calls reuse it.
+    const fakeWin = makeFakeWindow(true);
+    BrowserWindowMock.mockImplementationOnce(() => fakeWin);
+
+    const ticketA = { id: 4, title: "Ticket D (first)" };
+    const ticketB = { id: 5, title: "Ticket E (second)" };
+
+    handler(null, ticketA); // detailWin created, pendingDetailTicket = ticketA, once() registered
+    handler(null, ticketB); // detailWin reused, pendingDetailTicket overwritten to ticketB, NO new once()
+
+    // Only ONE did-finish-load listener must exist — the second click must not add another.
+    const onceCallsForFinishLoad = (fakeWin.webContents.once as ReturnType<typeof vi.fn>).mock.calls.filter(
+      (c: unknown[]) => c[0] === "did-finish-load"
+    );
+    expect(onceCallsForFinishLoad).toHaveLength(1);
+
+    // Fire the single did-finish-load callback.
+    (onceCallsForFinishLoad[0][1] as () => void)();
+
+    // Must deliver the LATEST ticket (ticketB), not the stale first one.
+    expect(fakeWin.webContents.send).toHaveBeenCalledWith("ticket-detail-data", ticketB);
+    expect(fakeWin.webContents.send).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createTray — Finding 2: tray toggle hides/restores detail window
+// ---------------------------------------------------------------------------
+describe("createTray — detail window visibility on toggle", () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  it("hiding via tray also hides detailWin when it is visible", async () => {
+    const electron = await import("electron");
+
+    const mockWin = {
+      isVisible: vi.fn(() => true),
+      show: vi.fn(),
+      hide: vi.fn(),
+    };
+    const mockDetailWin = {
+      isVisible: vi.fn(() => true),
+      show: vi.fn(),
+      hide: vi.fn(),
+    };
+
+    const { createTray } = await import("./main.js");
+    createTray(mockWin as any, () => mockDetailWin as any);
+
+    const TrayCtor = electron.Tray as unknown as ReturnType<typeof vi.fn>;
+    const trayInstance = TrayCtor.mock.results[TrayCtor.mock.results.length - 1].value;
+    const clickCall = trayInstance.on.mock.calls.find((c: unknown[]) => c[0] === "click");
+    (clickCall![1] as () => void)();
+
+    expect(mockWin.hide).toHaveBeenCalled();
+    expect(mockDetailWin.hide).toHaveBeenCalled();
+  });
+
+  it("hiding via tray does NOT hide detailWin when detailWin is not visible", async () => {
+    const electron = await import("electron");
+
+    const mockWin = {
+      isVisible: vi.fn(() => true),
+      show: vi.fn(),
+      hide: vi.fn(),
+    };
+    const mockDetailWin = {
+      isVisible: vi.fn(() => false), // already hidden
+      show: vi.fn(),
+      hide: vi.fn(),
+    };
+
+    const { createTray } = await import("./main.js");
+    createTray(mockWin as any, () => mockDetailWin as any);
+
+    const TrayCtor = electron.Tray as unknown as ReturnType<typeof vi.fn>;
+    const trayInstance = TrayCtor.mock.results[TrayCtor.mock.results.length - 1].value;
+    const clickCall = trayInstance.on.mock.calls.find((c: unknown[]) => c[0] === "click");
+    (clickCall![1] as () => void)();
+
+    expect(mockWin.hide).toHaveBeenCalled();
+    expect(mockDetailWin.hide).not.toHaveBeenCalled();
+  });
+
+  it("hiding via tray is safe when getDetailWin returns null (no getter crash)", async () => {
+    const electron = await import("electron");
+
+    const mockWin = {
+      isVisible: vi.fn(() => true),
+      show: vi.fn(),
+      hide: vi.fn(),
+    };
+
+    const { createTray } = await import("./main.js");
+    // Pass a getter that returns null — simulates the window not yet created.
+    expect(() => {
+      createTray(mockWin as any, () => null);
+      const TrayCtor = electron.Tray as unknown as ReturnType<typeof vi.fn>;
+      const trayInstance = TrayCtor.mock.results[TrayCtor.mock.results.length - 1].value;
+      const clickCall = trayInstance.on.mock.calls.find((c: unknown[]) => c[0] === "click");
+      (clickCall![1] as () => void)();
+    }).not.toThrow();
+
+    expect(mockWin.hide).toHaveBeenCalled();
+  });
+
+  it("hiding via tray is safe when no getDetailWin is provided (no getter crash)", async () => {
+    const electron = await import("electron");
+
+    const mockWin = {
+      isVisible: vi.fn(() => true),
+      show: vi.fn(),
+      hide: vi.fn(),
+    };
+
+    const { createTray } = await import("./main.js");
+    // No second argument — exercises the optional-getter code path.
+    expect(() => {
+      createTray(mockWin as any);
+      const TrayCtor = electron.Tray as unknown as ReturnType<typeof vi.fn>;
+      const trayInstance = TrayCtor.mock.results[TrayCtor.mock.results.length - 1].value;
+      const clickCall = trayInstance.on.mock.calls.find((c: unknown[]) => c[0] === "click");
+      (clickCall![1] as () => void)();
+    }).not.toThrow();
+
+    expect(mockWin.hide).toHaveBeenCalled();
+  });
+
+  it("showing via tray (panel was hidden) does NOT call detailWin.show", async () => {
+    const electron = await import("electron");
+
+    const mockWin = {
+      isVisible: vi.fn(() => false), // panel is hidden → toggle shows it
+      show: vi.fn(),
+      hide: vi.fn(),
+    };
+    const mockDetailWin = {
+      isVisible: vi.fn(() => false),
+      show: vi.fn(),
+      hide: vi.fn(),
+    };
+
+    const { createTray } = await import("./main.js");
+    createTray(mockWin as any, () => mockDetailWin as any);
+
+    const TrayCtor = electron.Tray as unknown as ReturnType<typeof vi.fn>;
+    const trayInstance = TrayCtor.mock.results[TrayCtor.mock.results.length - 1].value;
+    const clickCall = trayInstance.on.mock.calls.find((c: unknown[]) => c[0] === "click");
+    (clickCall![1] as () => void)();
+
+    expect(mockWin.show).toHaveBeenCalled();
+    expect(mockWin.hide).not.toHaveBeenCalled();
+    // Detail window is NOT auto-restored — user re-opens it by clicking a card.
+    expect(mockDetailWin.show).not.toHaveBeenCalled();
   });
 });

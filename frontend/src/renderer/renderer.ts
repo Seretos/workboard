@@ -9,6 +9,7 @@ interface TicketRow {
   title: string;
   status: string;
   url: string;
+  body?: string;
   labels: string[];
   provider: string;
   project_id: string;
@@ -93,6 +94,11 @@ function renderTickets(list: HTMLElement, tickets: TicketRow[]): void {
       metaDiv.className = "card-meta";
       const metaParts = [ticket.project_path, ticket.status].filter(Boolean);
       metaDiv.textContent = metaParts.join(" · ");
+
+      // Open the detail window for this ticket when the card is clicked.
+      li.addEventListener("click", () => {
+        window.detail.openTicketDetail(ticket);
+      });
 
       li.appendChild(head);
       li.appendChild(titleDiv);
