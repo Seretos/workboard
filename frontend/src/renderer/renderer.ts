@@ -1,5 +1,7 @@
 // Renderer script. Fetches the ticket list from the backend and renders it.
 
+const POLL_INTERVAL_MS = 60_000;
+
 // Shape mirrors the backend `/tickets` rows: a provider `Ticket` flattened
 // and enriched with its originating project's context.
 interface TicketRow {
@@ -130,10 +132,26 @@ async function loadTickets(): Promise<void> {
   setStatus(tickets.length === 0 ? "Keine offenen Tickets" : "");
 }
 
+// Starts the periodic poll and wires up the backend-crashed listener.
+// Exported so tests can drive the real production wiring without re-importing
+// the module; the guard block below calls it at app startup.
+function initRenderer(): void {
+  loadTickets();
+
+  // Poll for the lifetime of the app. The interval is cleared if the backend
+  // crashes so the crash message is not overwritten by a subsequent poll.
+  const pollId = setInterval(loadTickets, POLL_INTERVAL_MS);
+
+  window.backend.onBackendCrashed((code: number | null) => {
+    clearInterval(pollId);
+    setStatus(`Backend abgestürzt (Code ${code ?? "?"})`);
+  });
+}
+
 // Only auto-run when the Electron preload has injected window.backend.
 // In test environments (jsdom without a preload) this guard prevents a crash.
 if (typeof window !== "undefined" && window.backend) {
-  loadTickets();
+  initRenderer();
 }
 
 // Expose functions for unit tests via a CommonJS-style guard that is safe in a
@@ -142,5 +160,5 @@ if (typeof window !== "undefined" && window.backend) {
 // tsc emits this verbatim (no `exports.` preamble) because there are no
 // top-level `export` declarations above.
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { setStatus, renderTickets, loadTickets };
+  module.exports = { setStatus, renderTickets, loadTickets, initRenderer, POLL_INTERVAL_MS };
 }

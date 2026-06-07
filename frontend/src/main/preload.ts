@@ -30,4 +30,7 @@ contextBridge.exposeInMainWorld("backend", {
     }
     return { ok: res.ok, status: res.status, data };
   },
+  onBackendCrashed: (cb: (code: number | null) => void): void => {
+    ipcRenderer.on("backend-crashed", (_event, code) => cb(code as number | null));
+  },
 });
