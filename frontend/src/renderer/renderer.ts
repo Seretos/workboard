@@ -1,8 +1,21 @@
 // Renderer script. Fetches the ticket list from the backend and renders it.
+
+// Shape mirrors the backend `/tickets` rows: a provider `Ticket` flattened
+// and enriched with its originating project's context.
+interface TicketRow {
+  id: string;
+  title: string;
+  status: string;
+  url: string;
+  labels: string[];
+  provider: string;
+  project_id: string;
+  project_path: string;
+}
+
 async function loadTickets(): Promise<void> {
   const response = await window.backend.fetch("/tickets");
-  const tickets: Array<{ id: string; description: string; provider: string; path: string }> =
-    await response.json();
+  const tickets: TicketRow[] = await response.json();
 
   const list = document.getElementById("ticket-list");
   if (!list) return;
@@ -21,20 +34,21 @@ async function loadTickets(): Promise<void> {
 
     const idSpan = document.createElement("span");
     idSpan.className = "card-id";
-    idSpan.textContent = ticket.id ?? "";
+    idSpan.textContent = ticket.id ? `#${ticket.id}` : "";
 
     head.appendChild(providerSpan);
     head.appendChild(idSpan);
 
-    // Card title: description
+    // Card title: the ticket's title
     const titleDiv = document.createElement("div");
     titleDiv.className = "card-title";
-    titleDiv.textContent = ticket.description ?? "";
+    titleDiv.textContent = ticket.title ?? "";
 
-    // Card meta: path
+    // Card meta: which project the ticket belongs to + its status
     const metaDiv = document.createElement("div");
     metaDiv.className = "card-meta";
-    metaDiv.textContent = ticket.path ?? "";
+    const metaParts = [ticket.project_path, ticket.status].filter(Boolean);
+    metaDiv.textContent = metaParts.join(" · ");
 
     li.appendChild(head);
     li.appendChild(titleDiv);
