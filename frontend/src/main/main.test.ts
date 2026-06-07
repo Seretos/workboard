@@ -592,7 +592,8 @@ describe("resolveProjectsConfigPath", () => {
     const { resolveProjectsConfigPath } = await import("./main.js");
     const result = resolveProjectsConfigPath();
 
-    expect(result.replace(/\\/g, "/")).toMatch(/\.seretos\/projects\.yml$/);
+    expect(result).not.toBeNull();
+    expect(result!.replace(/\\/g, "/")).toMatch(/\.seretos\/projects\.yml$/);
   });
 
   it("packaged mode → null (backend falls through to ~/.seretos/projects.yml)", async () => {
