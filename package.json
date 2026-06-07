@@ -34,8 +34,7 @@
       "assets/**"
     ],
     "extraResources": [
-      { "from": "assets/icon.png", "to": "assets/icon.png" },
-      { "from": ".seretos", "to": ".seretos" }
+      { "from": "assets/icon.png", "to": "assets/icon.png" }
     ],
     "artifactName": "${name}-${version}-${os}.${ext}",
     "win": {

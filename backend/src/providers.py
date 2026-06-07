@@ -44,11 +44,12 @@ def load_all_projects():
     project boundaries outward from the process CWD → user-level
     `~/.seretos/projects.yml` fallback.
 
-    The Electron main process sets `PROJECT_ISSUES_CONFIG` when it spawns
-    the backend (see `resolveProjectsConfigPath` in `main.ts`), so in
-    practice that override decides the config file: the repo-local
-    `.seretos/projects.yml` in dev, and the path `main.ts` resolves in the
-    packaged app.
+    The Electron main process sets `PROJECT_ISSUES_CONFIG` only in dev
+    (see `resolveProjectsConfigPath` in `main.ts`), pinning the repo-local
+    `.seretos/projects.yml`. In the packaged app it leaves the override
+    unset, so resolution falls through to the user-level
+    `~/.seretos/projects.yml` — the installed board reads each user's own
+    project list rather than a bundled one.
 
     Thin indirection around `load_projects` so tests can monkey-patch
     `src.providers.load_projects` to substitute a deterministic project
