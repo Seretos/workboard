@@ -11,6 +11,7 @@
   --color-border:      rgba(255, 255, 255, 0.07);
   --color-border-top:  rgba(255, 255, 255, 0.06);
   --color-accent:      #9ca3af;
+  --color-pr:          #7c3aed;
   --color-text:        #e4e4e7;
   --color-text-muted:  #71717a;
   --color-badge-bg:    rgba(156, 163, 175, 0.15);
@@ -95,6 +96,35 @@ body {
   border-radius: 2px;
 }
 
+/* ---- Project group header ---- */
+.project-group-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-text-muted);
+  margin-top: 12px;
+  margin-bottom: 6px;
+  list-style: none;
+}
+
+.project-group-header:first-child {
+  margin-top: 0;
+}
+
+/* Per-group ticket count badge — same visual shape as .ticket-count */
+.group-count {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-badge-text);
+  background: var(--color-badge-bg);
+  border-radius: 10px;
+  padding: 1px 7px;
+  min-width: 20px;
+  text-align: center;
+}
+
 /* ---- Ticket card ---- */
 .ticket-card {
   position: relative;
@@ -110,6 +140,11 @@ body {
 
 .ticket-card:last-child {
   margin-bottom: 0;
+}
+
+/* Ticket with a linked PR: purple left-accent strip */
+.ticket-card--has-pr {
+  border-left-color: var(--color-pr);
 }
 
 /* ---- Card internals ---- */
