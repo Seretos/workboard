@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { renderTickets, loadTickets } from "./renderer.js";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { renderTickets, loadTickets, initRenderer, POLL_INTERVAL_MS } from "./renderer.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -314,6 +314,7 @@ describe("loadTickets", () => {
 
     (window as Window & typeof globalThis).backend = {
       fetchJson: vi.fn().mockResolvedValue({ ok: true, status: 200, data: tickets }),
+      onBackendCrashed: vi.fn(),
     };
 
     await loadTickets();
@@ -325,6 +326,7 @@ describe("loadTickets", () => {
   it("empty list: #ticket-count is '0' and status bar shows 'Keine offenen Tickets'", async () => {
     (window as Window & typeof globalThis).backend = {
       fetchJson: vi.fn().mockResolvedValue({ ok: true, status: 200, data: [] }),
+      onBackendCrashed: vi.fn(),
     };
 
     await loadTickets();
@@ -339,6 +341,7 @@ describe("loadTickets", () => {
   it("backend error (ok: false): #ticket-count is '!' and status bar shows error", async () => {
     (window as Window & typeof globalThis).backend = {
       fetchJson: vi.fn().mockResolvedValue({ ok: false, status: 503, data: null }),
+      onBackendCrashed: vi.fn(),
     };
 
     await loadTickets();
@@ -354,6 +357,7 @@ describe("loadTickets", () => {
   it("backend throws: #ticket-count is '!' and status bar shows error message", async () => {
     (window as Window & typeof globalThis).backend = {
       fetchJson: vi.fn().mockRejectedValue(new Error("Netzwerkfehler")),
+      onBackendCrashed: vi.fn(),
     };
 
     await loadTickets();
@@ -373,6 +377,7 @@ describe("loadTickets", () => {
 
     (window as Window & typeof globalThis).backend = {
       fetchJson: vi.fn().mockResolvedValue({ ok: true, status: 200, data: tickets }),
+      onBackendCrashed: vi.fn(),
     };
 
     await loadTickets();
@@ -380,5 +385,196 @@ describe("loadTickets", () => {
     const list = document.getElementById("ticket-list")!;
     const headers = list.querySelectorAll(".project-group-header");
     expect(headers).toHaveLength(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// polling
+// ---------------------------------------------------------------------------
+
+describe("polling", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("POLL_INTERVAL_MS equals 60_000", () => {
+    expect(POLL_INTERVAL_MS).toBe(60_000);
+  });
+
+  it("regression: fetchJson is called a second time after one interval elapses", async () => {
+    // This test drives initRenderer() — the real production wiring. It would
+    // fail if the setInterval were removed from initRenderer().
+    vi.useFakeTimers();
+
+    const tickets = [
+      makeTicket({ id: "1", project_id: "proj-a", project_path: "/repos/alpha" }),
+    ];
+    const fetchJson = vi.fn().mockResolvedValue({ ok: true, status: 200, data: tickets });
+    let capturedCrashCb: ((code: number | null) => void) | undefined;
+
+    document.body.innerHTML = `
+      <ul id="ticket-list"></ul>
+      <span id="ticket-count"></span>
+      <footer class="status-bar"></footer>
+    `;
+
+    (window as Window & typeof globalThis).backend = {
+      fetchJson,
+      onBackendCrashed: vi.fn((cb) => { capturedCrashCb = cb; }),
+    };
+
+    // Call the real init function — registers the poll and crash listener.
+    await initRenderer();
+    expect(fetchJson).toHaveBeenCalledTimes(1);
+
+    // Advance time by exactly one interval and let pending promises settle.
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
+
+    // fetchJson must have been invoked a second time by the interval.
+    expect(fetchJson.mock.calls.length).toBeGreaterThanOrEqual(2);
+
+    // Clean up: fire crash to clear the interval so no further ticks leak.
+    capturedCrashCb!(null);
+  });
+
+  it("regression: a failed poll does not clear a previously rendered list", async () => {
+    vi.useFakeTimers();
+
+    const ticket = makeTicket({ id: "1", project_id: "proj-a", project_path: "/repos/alpha" });
+    const fetchJson = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, status: 200, data: [ticket] })
+      .mockRejectedValueOnce(new Error("Netzwerkfehler"));
+    let capturedCrashCb: ((code: number | null) => void) | undefined;
+
+    document.body.innerHTML = `
+      <ul id="ticket-list"></ul>
+      <span id="ticket-count"></span>
+      <footer class="status-bar"></footer>
+    `;
+
+    (window as Window & typeof globalThis).backend = {
+      fetchJson,
+      onBackendCrashed: vi.fn((cb) => { capturedCrashCb = cb; }),
+    };
+
+    // Call real init — first load succeeds and renders one card.
+    await initRenderer();
+    expect(document.querySelectorAll(".ticket-card")).toHaveLength(1);
+
+    // Advance — second poll fires and fails.
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
+
+    // The card from the first successful load must still be present.
+    expect(document.querySelectorAll(".ticket-card")).toHaveLength(1);
+
+    // Clean up: stop the interval.
+    capturedCrashCb!(null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// backend-crashed display
+// ---------------------------------------------------------------------------
+
+describe("backend-crashed display", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("callback with a numeric code sets .status-bar text containing 'abgestürzt' and the code", async () => {
+    // Drive the real initRenderer() wiring — the crash callback registered
+    // there is the same one that fires in production.
+    vi.useFakeTimers();
+
+    const fetchJson = vi.fn().mockResolvedValue({ ok: true, status: 200, data: [] });
+    let capturedCrashCb: ((code: number | null) => void) | undefined;
+
+    document.body.innerHTML = `
+      <ul id="ticket-list"></ul>
+      <span id="ticket-count"></span>
+      <footer class="status-bar"></footer>
+    `;
+
+    (window as Window & typeof globalThis).backend = {
+      fetchJson,
+      onBackendCrashed: vi.fn((cb) => { capturedCrashCb = cb; }),
+    };
+
+    await initRenderer();
+
+    capturedCrashCb!(42);
+
+    const statusBar = document.querySelector(".status-bar");
+    expect(statusBar!.textContent).toContain("abgestürzt");
+    expect(statusBar!.textContent).toContain("42");
+  });
+
+  it("callback with null does not throw and renders '?'", async () => {
+    vi.useFakeTimers();
+
+    const fetchJson = vi.fn().mockResolvedValue({ ok: true, status: 200, data: [] });
+    let capturedCrashCb: ((code: number | null) => void) | undefined;
+
+    document.body.innerHTML = `
+      <ul id="ticket-list"></ul>
+      <span id="ticket-count"></span>
+      <footer class="status-bar"></footer>
+    `;
+
+    (window as Window & typeof globalThis).backend = {
+      fetchJson,
+      onBackendCrashed: vi.fn((cb) => { capturedCrashCb = cb; }),
+    };
+
+    await initRenderer();
+
+    expect(() => capturedCrashCb!(null)).not.toThrow();
+
+    const statusBar = document.querySelector(".status-bar");
+    expect(statusBar!.textContent).toContain("?");
+  });
+
+  it("regression: crash clears the poll — fetchJson not called again and crash message persists", async () => {
+    // This test would fail without the clearInterval() in onBackendCrashed:
+    // without it the interval would fire again, overwrite the crash message,
+    // and fetchJson would be called more times.
+    vi.useFakeTimers();
+
+    const ticket = makeTicket({ id: "1", project_id: "proj-a", project_path: "/repos/alpha" });
+    const fetchJson = vi.fn().mockResolvedValue({ ok: true, status: 200, data: [ticket] });
+    let capturedCrashCb: ((code: number | null) => void) | undefined;
+
+    document.body.innerHTML = `
+      <ul id="ticket-list"></ul>
+      <span id="ticket-count"></span>
+      <footer class="status-bar"></footer>
+    `;
+
+    (window as Window & typeof globalThis).backend = {
+      fetchJson,
+      onBackendCrashed: vi.fn((cb) => { capturedCrashCb = cb; }),
+    };
+
+    // (1) First successful load via the real init.
+    await initRenderer();
+    const callsAfterInit = fetchJson.mock.calls.length;
+
+    // (2) Fire the crash event — this must clearInterval and set the message.
+    capturedCrashCb!(7);
+
+    const statusBar = document.querySelector(".status-bar");
+    expect(statusBar!.textContent).toContain("abgestürzt");
+    expect(statusBar!.textContent).toContain("7");
+
+    // (3) Advance timers well past one interval — the stopped poll must not fire.
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * 3);
+
+    // (4) fetchJson must not have been called again after the crash.
+    expect(fetchJson.mock.calls.length).toBe(callsAfterInit);
+
+    // (5) Status bar still reads the crash message (not "Lädt Tickets…" or empty).
+    expect(statusBar!.textContent).toContain("abgestürzt");
+    expect(statusBar!.textContent).toContain("7");
   });
 });
