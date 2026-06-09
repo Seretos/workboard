@@ -3,6 +3,7 @@ dist/
 release/
 backend-bin/
 .venv-build/
+.venv-test/
 **/__pycache__/
 **/*.pyc
 **/*.pyo
