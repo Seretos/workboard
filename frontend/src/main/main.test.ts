@@ -980,8 +980,8 @@ describe("open-ticket-detail IPC handler (readiness guard)", () => {
     const fakeWin = makeFakeWindow(true);
     BrowserWindowMock.mockImplementationOnce(() => fakeWin);
 
-    const ticketA = { id: 4, title: "Ticket D (first)" };
-    const ticketB = { id: 5, title: "Ticket E (second)" };
+    const ticketA = { id: "4", title: "Ticket D (first)" };
+    const ticketB = { id: "5", title: "Ticket E (second)" };
 
     handler(null, ticketA); // detailWin created, pendingDetailTicket = ticketA, once() registered
     handler(null, ticketB); // detailWin reused, pendingDetailTicket overwritten to ticketB, NO new once()
@@ -998,6 +998,178 @@ describe("open-ticket-detail IPC handler (readiness guard)", () => {
     // Must deliver the LATEST ticket (ticketB), not the stale first one.
     expect(fakeWin.webContents.send).toHaveBeenCalledWith("ticket-detail-data", ticketB);
     expect(fakeWin.webContents.send).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// open-ticket-detail IPC handler — toggle-close behaviour
+// ---------------------------------------------------------------------------
+describe("open-ticket-detail IPC handler (toggle-close)", () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  function makeFakeWindow(isLoadingReturnValue: boolean, isVisibleReturnValue = false) {
+    return {
+      loadFile: vi.fn(),
+      isDestroyed: vi.fn(() => false),
+      isVisible: vi.fn(() => isVisibleReturnValue),
+      show: vi.fn(),
+      hide: vi.fn(),
+      on: vi.fn(),
+      webContents: {
+        send: vi.fn(),
+        isLoading: vi.fn(() => isLoadingReturnValue),
+        once: vi.fn(),
+      },
+    };
+  }
+
+  async function importAndGetHandler() {
+    const electron = await import("electron");
+    const ipcMainMock = electron.ipcMain as unknown as {
+      on: ReturnType<typeof vi.fn>;
+    };
+
+    await import("./main.js");
+
+    const allCalls: unknown[][] = ipcMainMock.on.mock.calls;
+    let handlerFn: ((_event: unknown, ticket: unknown) => void) | undefined;
+    for (let i = allCalls.length - 1; i >= 0; i--) {
+      if (allCalls[i][0] === "open-ticket-detail") {
+        handlerFn = allCalls[i][1] as (_event: unknown, ticket: unknown) => void;
+        break;
+      }
+    }
+    expect(handlerFn).toBeDefined();
+    return {
+      handler: handlerFn!,
+      BrowserWindowMock: electron.BrowserWindow as unknown as ReturnType<typeof vi.fn>,
+    };
+  }
+
+  it("toggle off: same ticket url clicked while visible → hide called, send NOT called again", async () => {
+    const { handler, BrowserWindowMock } = await importAndGetHandler();
+
+    // First call: window hidden → open it.
+    const fakeWin = makeFakeWindow(false, false);
+    BrowserWindowMock.mockImplementationOnce(() => fakeWin);
+
+    const ticket = { url: "https://github.com/org/repo/issues/1", title: "A" };
+    handler(null, ticket);
+
+    expect(fakeWin.show).toHaveBeenCalled();
+    expect(fakeWin.webContents.send).toHaveBeenCalledWith("ticket-detail-data", ticket);
+
+    // Now simulate the window being visible.
+    (fakeWin.isVisible as ReturnType<typeof vi.fn>).mockReturnValue(true);
+
+    // Second call with the same url — should toggle off.
+    handler(null, { url: "https://github.com/org/repo/issues/1" });
+
+    expect(fakeWin.hide).toHaveBeenCalled();
+    // send should NOT have been called a second time.
+    expect(fakeWin.webContents.send).toHaveBeenCalledTimes(1);
+  });
+
+  it("switch ticket: different url while visible → send called with new ticket, hide NOT called", async () => {
+    const { handler, BrowserWindowMock } = await importAndGetHandler();
+
+    const fakeWin = makeFakeWindow(false, false);
+    BrowserWindowMock.mockImplementationOnce(() => fakeWin);
+
+    handler(null, { url: "https://github.com/org/repo-a/issues/42", title: "First" });
+    expect(fakeWin.show).toHaveBeenCalled();
+
+    (fakeWin.isVisible as ReturnType<typeof vi.fn>).mockReturnValue(true);
+
+    const secondTicket = { url: "https://github.com/org/repo-b/issues/42", title: "Second" };
+    handler(null, secondTicket);
+
+    // hide must NOT have been called — different urls even though same issue number.
+    expect(fakeWin.hide).not.toHaveBeenCalled();
+    // send called for first (open) and second (switch).
+    expect(fakeWin.webContents.send).toHaveBeenCalledWith("ticket-detail-data", secondTicket);
+    expect(fakeWin.webContents.send).toHaveBeenCalledTimes(2);
+  });
+
+  it("no url (legacy ticket): two identical calls do NOT toggle off; both show/send normally", async () => {
+    const { handler, BrowserWindowMock } = await importAndGetHandler();
+
+    const fakeWin = makeFakeWindow(false, false);
+    BrowserWindowMock.mockImplementationOnce(() => fakeWin);
+
+    // No url field — null !== null is false so toggle never fires.
+    const legacyTicket = { title: "X", body: "Y" };
+    handler(null, legacyTicket);
+
+    expect(fakeWin.show).toHaveBeenCalled();
+    expect(fakeWin.webContents.send).toHaveBeenCalledWith("ticket-detail-data", legacyTicket);
+
+    // Simulate visible.
+    (fakeWin.isVisible as ReturnType<typeof vi.fn>).mockReturnValue(true);
+
+    // Second call with same legacy ticket (no url) — must NOT toggle off; must switch.
+    handler(null, legacyTicket);
+
+    expect(fakeWin.hide).not.toHaveBeenCalled();
+    // send called twice (once for each call).
+    expect(fakeWin.webContents.send).toHaveBeenCalledTimes(2);
+  });
+
+  it("toggle while loading: two same-url calls while loading → no crash; once() guard still functions", async () => {
+    const { handler, BrowserWindowMock } = await importAndGetHandler();
+
+    const fakeWin = makeFakeWindow(true, false); // loading, hidden
+    BrowserWindowMock.mockImplementationOnce(() => fakeWin);
+
+    const ticket = { url: "https://github.com/org/repo/issues/3", title: "Loading ticket" };
+    handler(null, ticket);
+    // No crash, once() registered.
+    expect(fakeWin.webContents.once).toHaveBeenCalledWith("did-finish-load", expect.any(Function));
+
+    // Second call with same url while still loading and hidden — buffering logic.
+    handler(null, ticket);
+
+    // Still only one once() listener.
+    const onceFinishLoad = (fakeWin.webContents.once as ReturnType<typeof vi.fn>).mock.calls.filter(
+      (c: unknown[]) => c[0] === "did-finish-load"
+    );
+    expect(onceFinishLoad).toHaveLength(1);
+
+    // Fire the callback — should send + show.
+    (onceFinishLoad[0][1] as () => void)();
+    expect(fakeWin.webContents.send).toHaveBeenCalledWith("ticket-detail-data", ticket);
+    expect(fakeWin.show).toHaveBeenCalled();
+  });
+
+  it("close-path reset: after window is hidden via close handler, same-url ticket reopens the window", async () => {
+    const { handler, BrowserWindowMock } = await importAndGetHandler();
+
+    const fakeWin = makeFakeWindow(false, false);
+    BrowserWindowMock.mockImplementationOnce(() => fakeWin);
+
+    const ticket = { url: "https://github.com/org/repo/issues/7", title: "Closeable" };
+
+    // Open the window.
+    handler(null, ticket);
+    expect(fakeWin.show).toHaveBeenCalledTimes(1);
+
+    // Simulate hiding via the close handler (fires win.on("close") which calls
+    // win.hide() and resets currentDetailTicketUrl). We retrieve that handler
+    // from the on() spy and invoke it, then simulate the window becoming hidden.
+    const onSpy = fakeWin.on as ReturnType<typeof vi.fn>;
+    const closeCall = onSpy.mock.calls.find((c: unknown[]) => c[0] === "close");
+    expect(closeCall).toBeDefined();
+    const fakeEvent = { preventDefault: vi.fn() };
+    (closeCall![1] as (e: typeof fakeEvent) => void)(fakeEvent);
+    // Window is now hidden; toggle key cleared.
+    (fakeWin.isVisible as ReturnType<typeof vi.fn>).mockReturnValue(false);
+
+    // Clicking the same ticket again must show the window, not toggle it off.
+    handler(null, ticket);
+    expect(fakeWin.show).toHaveBeenCalledTimes(2);
+    expect(fakeWin.webContents.send).toHaveBeenCalledTimes(2);
   });
 });
 

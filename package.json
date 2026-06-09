@@ -6,7 +6,7 @@
   "license": "MIT",
   "main": "dist/main/main.js",
   "scripts": {
-    "build": "tsc --project frontend/tsconfig.json && node -e \"const fs=require('fs');const path=require('path');const src='frontend/src/renderer';const dst='dist/renderer';fs.mkdirSync(dst,{recursive:true});['index.html','detail.html','styles.css'].forEach(f=>fs.copyFileSync(path.join(src,f),path.join(dst,f)))\"",
+    "build": "tsc --project frontend/tsconfig.json && node -e \"const fs=require('fs');const path=require('path');const src='frontend/src/renderer';const dst='dist/renderer';fs.mkdirSync(dst,{recursive:true});['index.html','detail.html','styles.css'].forEach(f=>fs.copyFileSync(path.join(src,f),path.join(dst,f)));fs.copyFileSync('node_modules/marked/marked.min.js',path.join(dst,'marked.min.js'));fs.copyFileSync('node_modules/dompurify/dist/purify.min.js',path.join(dst,'purify.min.js'));\"",
     "start": "electron .",
     "test": "vitest run",
     "dist": "electron-builder",
@@ -14,7 +14,12 @@
     "dist:mac": "electron-builder --mac",
     "dist:linux": "electron-builder --linux"
   },
+  "dependencies": {
+    "dompurify": "^3.0.0",
+    "marked": "^13.0.0"
+  },
   "devDependencies": {
+    "@types/dompurify": "^3.0.0",
     "@types/jsdom": "^28.0.3",
     "@types/node": "^20.14.0",
     "@vitest/coverage-v8": "^2.0.0",

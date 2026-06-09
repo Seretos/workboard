@@ -18,6 +18,11 @@ let detailWin: BrowserWindow | null = null;
 // At most one pending ticket is kept — a second click while loading replaces it.
 let pendingDetailTicket: unknown = null;
 
+// Tracks the URL of the ticket currently shown in the detail window.
+// url is globally unique across projects (unlike numeric id which collides between repos).
+// Used to implement toggle-close: clicking the same ticket again hides the window.
+let currentDetailTicketUrl: string | null = null;
+
 // Set to true when a real quit is in progress so the close handler does not
 // intercept and hide the window instead of letting Electron destroy it.
 let isQuitting = false;
@@ -182,6 +187,13 @@ ipcMain.handle("appInfo.getVersion", () => {
 // Show the detail window with the clicked ticket's data. The window is created
 // eagerly in bootstrap() so this handler just pushes data and un-hides it.
 //
+// Toggle-close: if the same ticket url is clicked while the window is visible,
+// hide the window (toggle off). If a different ticket is clicked while visible,
+// switch the content without hiding. url is used as the key (not numeric id)
+// because issue numbers are only unique within a single repository — the same
+// number can appear in two different projects. Tickets without a url field never
+// toggle off (null !== null is always false, so two null urls don't cancel each other).
+//
 // Guard against the first-click race: loadFile() is async, so the renderer
 // may not have registered its listener yet. When the page is still loading we
 // buffer the ticket and deliver it via did-finish-load instead of sending now.
@@ -189,9 +201,26 @@ ipcMain.handle("appInfo.getVersion", () => {
 // most-recent data is delivered — we replace pendingDetailTicket and let the
 // already-registered once() listener pick it up; no second listener is added.
 ipcMain.on("open-ticket-detail", (_event, ticket) => {
+  const ticketUrl: string | null = (ticket as { url?: string })?.url ?? null;
+
+  if (detailWin && detailWin.isVisible()) {
+    if (ticketUrl !== null && ticketUrl === currentDetailTicketUrl) {
+      // Same ticket clicked again — toggle off.
+      detailWin.hide();
+      currentDetailTicketUrl = null;
+      return;
+    }
+    // Different ticket (or no url) — switch content, keep window open.
+    currentDetailTicketUrl = ticketUrl;
+    detailWin.webContents.send("ticket-detail-data", ticket);
+    return;
+  }
+
+  // Window is hidden or not yet created — open it.
   if (!detailWin) {
     detailWin = createDetailWindow();
   }
+  currentDetailTicketUrl = ticketUrl;
   if (detailWin.webContents.isLoading()) {
     // If no listener is registered yet (first click while loading), add one.
     // If one was already registered (second click while loading), just replace
@@ -202,6 +231,7 @@ ipcMain.on("open-ticket-detail", (_event, ticket) => {
       detailWin.webContents.once("did-finish-load", () => {
         const t = pendingDetailTicket;
         pendingDetailTicket = null;
+        currentDetailTicketUrl = (t as { url?: string })?.url ?? null;
         detailWin?.webContents.send("ticket-detail-data", t);
         detailWin?.show();
       });
@@ -289,10 +319,14 @@ export function createDetailWindow(): BrowserWindow {
 
   // Mirror the panel's close behaviour: hide instead of destroy so the tray
   // keeps the app alive. Let it through only when a real quit is in progress.
+  // Clear the toggle key so that reopening the same ticket shows the window
+  // rather than silently no-oping (stale key would make the next open-ticket-detail
+  // call think the window is already showing the same ticket and toggle it off).
   win.on("close", (event) => {
     if (!isQuitting) {
       event.preventDefault();
       win.hide();
+      currentDetailTicketUrl = null;
     }
   });
 
@@ -333,9 +367,12 @@ export function createTray(
     if (win.isVisible()) {
       win.hide();
       // Also hide the detail window so it doesn't stay stranded on screen.
+      // Clear the toggle key at the same time — the detail window is now hidden
+      // outside the IPC handler, so the next card click must always show it.
       const dw = getDetailWin?.();
       if (dw && dw.isVisible()) {
         dw.hide();
+        currentDetailTicketUrl = null;
       }
     } else {
       win.show();
