@@ -3,7 +3,7 @@
 
 // Ambient globals injected via vendor UMD scripts loaded before detail.js.
 declare const marked: { parse: (src: string) => string };
-declare const DOMPurify: { sanitize: (html: string) => string | TrustedHTML };
+declare const DOMPurify: { sanitize: (html: string) => string };
 
 // Shape of the data pushed from main over "ticket-detail-data".
 interface DetailTicket {
