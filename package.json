@@ -4,10 +4,12 @@
   "description": "A pinnable desktop board that surfaces your assigned tickets and spins up per-ticket worktrees, virtual desktops, and dev environments to parallelize agent-driven work.",
   "author": "Arne von Appen",
   "license": "MIT",
-  "main": "dist/main/main.js",
+  "main": "out/main/main.js",
   "scripts": {
-    "build": "tsc --project frontend/tsconfig.json && node -e \"const fs=require('fs');const path=require('path');const src='frontend/src/renderer';const dst='dist/renderer';fs.mkdirSync(dst,{recursive:true});['index.html','detail.html','styles.css'].forEach(f=>fs.copyFileSync(path.join(src,f),path.join(dst,f)));fs.copyFileSync('node_modules/marked/marked.min.js',path.join(dst,'marked.min.js'));fs.copyFileSync('node_modules/dompurify/dist/purify.min.js',path.join(dst,'purify.min.js'));\"",
+    "build": "electron-vite build",
     "start": "electron .",
+    "dev": "electron-vite dev",
+    "dev:browser": "vite --config electron.vite.config.ts",
     "test": "vitest run",
     "dist": "electron-builder",
     "dist:win": "electron-builder --win",
@@ -16,17 +18,27 @@
   },
   "dependencies": {
     "dompurify": "^3.0.0",
-    "marked": "^13.0.0"
+    "marked": "^13.0.0",
+    "react": "^18.3.0",
+    "react-dom": "^18.3.0"
   },
   "devDependencies": {
+    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/react": "^16.1.0",
+    "@testing-library/user-event": "^14.5.2",
     "@types/dompurify": "^3.0.0",
     "@types/jsdom": "^28.0.3",
     "@types/node": "^20.14.0",
+    "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.4",
     "@vitest/coverage-v8": "^2.0.0",
     "electron": "^31.0.0",
     "electron-builder": "^24.13.3",
+    "electron-vite": "^2.3.0",
     "jsdom": "^29.1.1",
     "typescript": "^5.5.0",
+    "vite-plugin-pwa": "^0.21.1",
     "vitest": "^2.0.0"
   },
   "build": {
@@ -37,7 +49,7 @@
       "output": "release"
     },
     "files": [
-      "dist/**",
+      "out/**",
       "assets/**"
     ],
     "extraResources": [

@@ -4,39 +4,10 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Ticket Detail</title>
-    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
-    <div class="detail-accent-bar"></div>
-
-    <header class="detail-header">
-      <div class="detail-head-top">
-        <span id="detail-id" class="detail-id"></span>
-        <button id="detail-close-btn" class="detail-close" type="button">&#x2715;</button>
-      </div>
-      <h1 id="detail-title" class="detail-title"></h1>
-      <div class="detail-sub-row">
-        <span id="detail-status-pill" class="detail-status-pill"></span>
-        <a id="detail-gh-link" class="detail-link">Open on GitHub</a>
-      </div>
-    </header>
-
-    <div class="detail-body-scroll sb-scroll">
-      <div id="detail-body-md" class="detail-body-md"></div>
-      <div id="detail-pr-section" class="detail-pr-section" style="display:none">
-        <a id="detail-pr-link" class="detail-link">Pull Request</a>
-        <span id="detail-pr-status" class="card-provider"></span>
-      </div>
-    </div>
-
-    <footer class="detail-footer">
-      <button class="detail-btn-ghost" id="detail-close-footer" type="button">Schlie&#xDF;en</button>
-      <button class="detail-btn-primary" id="detail-gh-btn" type="button">In Browser &#xF6;ffnen</button>
-    </footer>
-
-    <!-- Vendor scripts must load before detail.js -->
-    <script src="marked.min.js"></script>
-    <script src="purify.min.js"></script>
-    <script src="detail.js"></script>
+    <div id="root"></div>
+    <script type="module" src="./detail.tsx"></script>
   </body>
 </html>
