@@ -39,10 +39,10 @@ projects:
     path: Seretos/agent-marketplace
     token_env: GITHUB_TOKEN
 
-  - id: agent-python-developer-ticket-workflow
+  - id: agent-autonomous-developer
     description: ""
     provider: github
-    path: Seretos/agent-python-developer-ticket-workflow
+    path: Seretos/agent-autonomous-developer
     token_env: GITHUB_TOKEN
 
   - id: agent-mcp-tester
@@ -98,24 +98,40 @@ projects:
     provider: github
     path: Seretos/lib-python-projects
     token_env: GITHUB_TOKEN
+    permissions:
+      issues:
+        create: true
+        modify: true
 
   - id: lib-python-worktree
     description: ""
     provider: github
     path: Seretos/lib-python-worktree
     token_env: GITHUB_TOKEN
+    permissions:
+      issues:
+        create: true
+        modify: true
 
   - id: lib-python-vdesktop
     description: ""
     provider: github
     path: Seretos/lib-python-vdesktop
     token_env: GITHUB_TOKEN
+    permissions:
+      issues:
+        create: true
+        modify: true
 
   - id: lib-python-config
     description: ""
     provider: github
     path: Seretos/lib-python-config
     token_env: GITHUB_TOKEN
+    permissions:
+      issues:
+        create: true
+        modify: true
 
   - id: agent-serena-wrapper
     description: ""
