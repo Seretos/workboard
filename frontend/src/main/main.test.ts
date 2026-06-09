@@ -310,6 +310,21 @@ describe("createWindow", () => {
     );
   });
 
+  it("regression: webPreferences.preload points to ../preload/preload.js (electron-vite output)", async () => {
+    const electron = await import("electron");
+
+    const { createWindow } = await import("./main.js");
+    createWindow();
+
+    const calls = (electron.BrowserWindow as unknown as ReturnType<typeof vi.fn>).mock.calls;
+    const lastOpts = calls[calls.length - 1][0] as Record<string, unknown>;
+    const webPrefs = lastOpts.webPreferences as Record<string, unknown>;
+    expect(typeof webPrefs.preload).toBe("string");
+    expect((webPrefs.preload as string).replace(/\\/g, "/")).toMatch(
+      /preload[\\/]preload\.js$/
+    );
+  });
+
   // ---- Close-handler tests ----
 
   it("close handler calls event.preventDefault() and win.hide() when not quitting", async () => {
@@ -782,6 +797,21 @@ describe("createDetailWindow", () => {
       (c: unknown[]) => c[0] as string
     );
     expect(registeredChannels).toContain("open-ticket-detail");
+  });
+
+  it("regression: webPreferences.preload points to ../preload/preload.js (electron-vite output)", async () => {
+    const electron = await import("electron");
+
+    const { createDetailWindow } = await import("./main.js");
+    createDetailWindow();
+
+    const calls = (electron.BrowserWindow as unknown as ReturnType<typeof vi.fn>).mock.calls;
+    const lastOpts = calls[calls.length - 1][0] as Record<string, unknown>;
+    const webPrefs = lastOpts.webPreferences as Record<string, unknown>;
+    expect(typeof webPrefs.preload).toBe("string");
+    expect((webPrefs.preload as string).replace(/\\/g, "/")).toMatch(
+      /preload[\\/]preload\.js$/
+    );
   });
 });
 
