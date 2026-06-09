@@ -7,6 +7,7 @@ dispatching to each project's provider (mirroring the
 access happens.
 """
 
+import httpx
 from unittest.mock import MagicMock, patch
 
 from fastapi.testclient import TestClient
@@ -103,6 +104,19 @@ def _fake_provider(
     return provider
 
 
+def _make_http_error(
+    status_code: int,
+    headers: dict | None = None,
+) -> httpx.HTTPStatusError:
+    """Build a minimal httpx.HTTPStatusError for simulating rate-limit responses."""
+    response = httpx.Response(status_code, headers=headers or {})
+    return httpx.HTTPStatusError(
+        "rate limited",
+        request=httpx.Request("GET", "https://api.github.com"),
+        response=response,
+    )
+
+
 def test_tickets_ok() -> None:
     """GET /tickets returns HTTP 200."""
     with patch("src.api.tickets.load_all_projects",
@@ -114,13 +128,13 @@ def test_tickets_ok() -> None:
 
 
 def test_tickets_json_array() -> None:
-    """GET /tickets body is a JSON array."""
+    """GET /tickets body is a JSON object with a 'tickets' array."""
     with patch("src.api.tickets.load_all_projects",
                return_value=_make_result([_sample_project()])), \
          patch("src.api.tickets.provider_for",
                return_value=_fake_provider([_sample_ticket()])):
         response = client.get("/tickets")
-    assert isinstance(response.json(), list)
+    assert isinstance(response.json()["tickets"], list)
 
 
 def test_tickets_content_type() -> None:
@@ -140,7 +154,7 @@ def test_tickets_item_fields() -> None:
          patch("src.api.tickets.provider_for",
                return_value=_fake_provider([_sample_ticket("7", "Wire the icon")])):
         response = client.get("/tickets")
-    items = response.json()
+    items = response.json()["tickets"]
     assert len(items) == 1
     item = items[0]
     # Provider ticket fields.
@@ -167,7 +181,7 @@ def test_tickets_aggregates_across_projects() -> None:
                return_value=_make_result(projects)), \
          patch("src.api.tickets.provider_for", side_effect=fake_provider_for):
         response = client.get("/tickets")
-    items = response.json()
+    items = response.json()["tickets"]
     assert len(items) == 2
     assert {i["project_id"] for i in items} == {"a", "b"}
 
@@ -191,19 +205,21 @@ def test_tickets_skips_failing_project() -> None:
                return_value=_make_result(projects)), \
          patch("src.api.tickets.provider_for", side_effect=fake_provider_for):
         response = client.get("/tickets")
-    items = response.json()
+    items = response.json()["tickets"]
     assert response.status_code == 200
     assert len(items) == 1
     assert items[0]["project_id"] == "good"
 
 
 def test_tickets_empty_list() -> None:
-    """GET /tickets with no projects returns 200 with empty array."""
+    """GET /tickets with no projects returns 200 with empty tickets array and null poll_errors."""
     with patch("src.api.tickets.load_all_projects",
                return_value=_make_result([])):
         response = client.get("/tickets")
     assert response.status_code == 200
-    assert response.json() == []
+    data = response.json()
+    assert data["tickets"] == []
+    assert data["poll_errors"] is None
 
 
 def test_tickets_lib_error_returns_500() -> None:
@@ -256,7 +272,7 @@ def test_tickets_pr_linked_via_body_keyword() -> None:
          patch("src.api.tickets.provider_for",
                return_value=_fake_provider([_sample_ticket("42")], prs=[pr])):
         response = client.get("/tickets")
-    items = response.json()
+    items = response.json()["tickets"]
     assert len(items) == 1
     pr_field = items[0]["pull_request"]
     assert pr_field is not None
@@ -274,7 +290,7 @@ def test_tickets_pr_null_when_no_match() -> None:
          patch("src.api.tickets.provider_for",
                return_value=_fake_provider([_sample_ticket("42")], prs=[pr])):
         response = client.get("/tickets")
-    items = response.json()
+    items = response.json()["tickets"]
     assert len(items) == 1
     assert items[0]["pull_request"] is None
 
@@ -286,7 +302,7 @@ def test_tickets_pr_null_when_no_prs() -> None:
          patch("src.api.tickets.provider_for",
                return_value=_fake_provider([_sample_ticket("42")], prs=[])):
         response = client.get("/tickets")
-    items = response.json()
+    items = response.json()["tickets"]
     assert len(items) == 1
     assert items[0]["pull_request"] is None
 
@@ -299,7 +315,7 @@ def test_tickets_pr_linked_via_branch_name() -> None:
          patch("src.api.tickets.provider_for",
                return_value=_fake_provider([_sample_ticket("42")], prs=[pr])):
         response = client.get("/tickets")
-    items = response.json()
+    items = response.json()["tickets"]
     assert len(items) == 1
     pr_field = items[0]["pull_request"]
     assert pr_field is not None
@@ -314,7 +330,7 @@ def test_tickets_pr_linked_via_branch_name_plain_prefix() -> None:
          patch("src.api.tickets.provider_for",
                return_value=_fake_provider([_sample_ticket("42")], prs=[pr])):
         response = client.get("/tickets")
-    items = response.json()
+    items = response.json()["tickets"]
     assert len(items) == 1
     pr_field = items[0]["pull_request"]
     assert pr_field is not None
@@ -340,7 +356,7 @@ def test_tickets_pr_branch_heuristic_skipped_when_body_matched() -> None:
         response = client.get("/tickets")
 
     assert response.status_code == 200
-    items = response.json()
+    items = response.json()["tickets"]
     by_id = {i["id"]: i for i in items}
 
     # Ticket A is correctly linked via body keyword.
@@ -365,7 +381,7 @@ def test_tickets_pr_fetch_failure_does_not_suppress_ticket() -> None:
          patch("src.api.tickets.provider_for", return_value=broken_provider):
         response = client.get("/tickets")
     assert response.status_code == 200
-    items = response.json()
+    items = response.json()["tickets"]
     assert len(items) == 1
     assert items[0]["pull_request"] is None
 
@@ -395,7 +411,7 @@ def test_tickets_pr_field_always_present() -> None:
          patch("src.api.tickets.provider_for", side_effect=fake_provider_for):
         response = client.get("/tickets")
 
-    items = response.json()
+    items = response.json()["tickets"]
     assert len(items) == 2
     for item in items:
         assert "pull_request" in item, f"pull_request key missing in {item}"
@@ -429,6 +445,175 @@ def test_tickets_pr_body_keyword_variants() -> None:
              patch("src.api.tickets.provider_for",
                    return_value=_fake_provider([_sample_ticket("42")], prs=[pr])):
             response = client.get("/tickets")
-        items = response.json()
+        items = response.json()["tickets"]
         assert items[0]["pull_request"] is not None, \
             f"Expected PR match for keyword '{kw}' but got null"
+
+
+# ---------------------------------------------------------------------------
+# New tests for rate-limit resilience (ticket #25).
+# ---------------------------------------------------------------------------
+
+
+def test_tickets_rate_limit_403_sets_flag() -> None:
+    """When list_tickets raises HTTP 403, poll_errors.rate_limited is True."""
+    broken_provider = MagicMock()
+    broken_provider.list_tickets.side_effect = _make_http_error(
+        403, headers={"Retry-After": "120"}
+    )
+    broken_provider.list_prs.return_value = ([], False)
+
+    with patch("src.api.tickets.load_all_projects",
+               return_value=_make_result([_sample_project()])), \
+         patch("src.api.tickets.provider_for", return_value=broken_provider):
+        response = client.get("/tickets")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["tickets"] == []
+    assert data["poll_errors"] is not None
+    assert data["poll_errors"]["rate_limited"] is True
+    assert data["poll_errors"]["retry_after"] == 120
+
+
+def test_tickets_rate_limit_429_sets_flag() -> None:
+    """When list_tickets raises HTTP 429, poll_errors.rate_limited is True."""
+    broken_provider = MagicMock()
+    broken_provider.list_tickets.side_effect = _make_http_error(
+        429, headers={"Retry-After": "120"}
+    )
+    broken_provider.list_prs.return_value = ([], False)
+
+    with patch("src.api.tickets.load_all_projects",
+               return_value=_make_result([_sample_project()])), \
+         patch("src.api.tickets.provider_for", return_value=broken_provider):
+        response = client.get("/tickets")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["poll_errors"]["rate_limited"] is True
+    assert data["poll_errors"]["retry_after"] == 120
+
+
+def test_tickets_rate_limit_retry_after_absent() -> None:
+    """HTTP 403 with no Retry-After header → poll_errors.retry_after is None."""
+    broken_provider = MagicMock()
+    broken_provider.list_tickets.side_effect = _make_http_error(403)
+    broken_provider.list_prs.return_value = ([], False)
+
+    with patch("src.api.tickets.load_all_projects",
+               return_value=_make_result([_sample_project()])), \
+         patch("src.api.tickets.provider_for", return_value=broken_provider):
+        response = client.get("/tickets")
+
+    data = response.json()
+    assert data["poll_errors"]["rate_limited"] is True
+    assert data["poll_errors"]["retry_after"] is None
+
+
+def test_tickets_rate_limit_excludes_sentinel_from_ticket_list() -> None:
+    """One rate-limited project + one good project → only good project's ticket."""
+    projects = [
+        _sample_project("rate-limited-proj", "org/limited"),
+        _sample_project("good-proj", "org/good"),
+    ]
+
+    def fake_provider_for(project):
+        if project.id == "rate-limited-proj":
+            broken = MagicMock()
+            broken.list_tickets.side_effect = _make_http_error(403)
+            broken.list_prs.return_value = ([], False)
+            return broken
+        return _fake_provider([_sample_ticket("99", "Good ticket")])
+
+    with patch("src.api.tickets.load_all_projects",
+               return_value=_make_result(projects)), \
+         patch("src.api.tickets.provider_for", side_effect=fake_provider_for):
+        response = client.get("/tickets")
+
+    data = response.json()
+    assert len(data["tickets"]) == 1
+    assert data["tickets"][0]["project_id"] == "good-proj"
+    assert data["poll_errors"]["rate_limited"] is True
+
+
+def test_tickets_rate_limit_retry_after_max_across_projects() -> None:
+    """Two rate-limited projects → retry_after is the maximum of both."""
+    projects = [
+        _sample_project("proj-a", "org/a"),
+        _sample_project("proj-b", "org/b"),
+    ]
+
+    def fake_provider_for(project):
+        if project.id == "proj-a":
+            broken = MagicMock()
+            broken.list_tickets.side_effect = _make_http_error(
+                429, headers={"Retry-After": "60"}
+            )
+            broken.list_prs.return_value = ([], False)
+            return broken
+        broken = MagicMock()
+        broken.list_tickets.side_effect = _make_http_error(
+            429, headers={"Retry-After": "300"}
+        )
+        broken.list_prs.return_value = ([], False)
+        return broken
+
+    with patch("src.api.tickets.load_all_projects",
+               return_value=_make_result(projects)), \
+         patch("src.api.tickets.provider_for", side_effect=fake_provider_for):
+        response = client.get("/tickets")
+
+    data = response.json()
+    assert data["poll_errors"]["retry_after"] == 300
+
+
+def test_tickets_no_errors_poll_errors_null() -> None:
+    """When all projects succeed, poll_errors is null."""
+    with patch("src.api.tickets.load_all_projects",
+               return_value=_make_result([_sample_project()])), \
+         patch("src.api.tickets.provider_for",
+               return_value=_fake_provider([_sample_ticket()])):
+        response = client.get("/tickets")
+
+    data = response.json()
+    assert data["poll_errors"] is None
+
+
+def test_tickets_generic_failure_does_not_set_rate_limited() -> None:
+    """A generic (non-HTTP) exception does not set poll_errors.rate_limited."""
+    broken_provider = MagicMock()
+    broken_provider.list_tickets.side_effect = RuntimeError("generic failure")
+    broken_provider.list_prs.return_value = ([], False)
+
+    with patch("src.api.tickets.load_all_projects",
+               return_value=_make_result([_sample_project()])), \
+         patch("src.api.tickets.provider_for", return_value=broken_provider):
+        response = client.get("/tickets")
+
+    data = response.json()
+    assert data["poll_errors"] is None
+
+
+def test_tickets_rate_limit_retry_after_non_numeric() -> None:
+    """HTTP-date Retry-After (RFC 7231) must not crash the endpoint.
+
+    ``int()`` on a date string such as "Thu, 01 Jan 2026 00:00:00 GMT" raises
+    ``ValueError``. The endpoint must return 200 with ``rate_limited: True``
+    and ``retry_after: None`` rather than a 500.
+    """
+    broken_provider = MagicMock()
+    broken_provider.list_tickets.side_effect = _make_http_error(
+        403, headers={"Retry-After": "Thu, 01 Jan 2026 00:00:00 GMT"}
+    )
+    broken_provider.list_prs.return_value = ([], False)
+
+    with patch("src.api.tickets.load_all_projects",
+               return_value=_make_result([_sample_project()])), \
+         patch("src.api.tickets.provider_for", return_value=broken_provider):
+        response = client.get("/tickets")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["poll_errors"]["rate_limited"] is True
+    assert data["poll_errors"]["retry_after"] is None

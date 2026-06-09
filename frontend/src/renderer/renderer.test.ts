@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { renderTickets, loadTickets, initRenderer, POLL_INTERVAL_MS } from "./renderer.js";
+import { renderTickets, loadTickets, initRenderer, POLL_INTERVAL_MS, pausePollForBackoff, getLastTickets } from "./renderer.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -30,6 +30,27 @@ function makeTicket(overrides: {
     project_id: overrides.project_id,
     project_path: overrides.project_path,
     pull_request: overrides.pull_request !== undefined ? overrides.pull_request : null,
+  };
+}
+
+/** Build a TicketsResponse envelope with poll_errors: null (the success case). */
+function makeSuccessResponse(tickets: ReturnType<typeof makeTicket>[]) {
+  return { ok: true, status: 200, data: { tickets, poll_errors: null } };
+}
+
+/** Build a TicketsResponse envelope for a rate-limited response. */
+function makeRateLimitResponse(
+  tickets: ReturnType<typeof makeTicket>[],
+  retry_after: number | null,
+  failed_projects: string[] = [],
+) {
+  return {
+    ok: true,
+    status: 200,
+    data: {
+      tickets,
+      poll_errors: { rate_limited: true, retry_after, failed_projects },
+    },
   };
 }
 
@@ -404,7 +425,7 @@ describe("loadTickets", () => {
     ];
 
     (window as Window & typeof globalThis).backend = {
-      fetchJson: vi.fn().mockResolvedValue({ ok: true, status: 200, data: tickets }),
+      fetchJson: vi.fn().mockResolvedValue(makeSuccessResponse(tickets)),
       onBackendCrashed: vi.fn(),
     };
 
@@ -416,7 +437,7 @@ describe("loadTickets", () => {
 
   it("empty list: #ticket-count is '0' and status bar shows 'Keine offenen Tickets'", async () => {
     (window as Window & typeof globalThis).backend = {
-      fetchJson: vi.fn().mockResolvedValue({ ok: true, status: 200, data: [] }),
+      fetchJson: vi.fn().mockResolvedValue(makeSuccessResponse([])),
       onBackendCrashed: vi.fn(),
     };
 
@@ -467,7 +488,7 @@ describe("loadTickets", () => {
     ];
 
     (window as Window & typeof globalThis).backend = {
-      fetchJson: vi.fn().mockResolvedValue({ ok: true, status: 200, data: tickets }),
+      fetchJson: vi.fn().mockResolvedValue(makeSuccessResponse(tickets)),
       onBackendCrashed: vi.fn(),
     };
 
@@ -476,6 +497,18 @@ describe("loadTickets", () => {
     const list = document.getElementById("ticket-list")!;
     const headers = list.querySelectorAll(".project-group-header");
     expect(headers).toHaveLength(2);
+  });
+
+  it("genuine zero tickets (poll_errors null): shows Keine offenen Tickets", async () => {
+    (window as Window & typeof globalThis).backend = {
+      fetchJson: vi.fn().mockResolvedValue(makeSuccessResponse([])),
+      onBackendCrashed: vi.fn(),
+    };
+
+    await loadTickets();
+
+    const statusBar = document.querySelector(".status-bar");
+    expect(statusBar!.textContent).toBe("Keine offenen Tickets");
   });
 });
 
@@ -500,7 +533,7 @@ describe("polling", () => {
     const tickets = [
       makeTicket({ id: "1", project_id: "proj-a", project_path: "/repos/alpha" }),
     ];
-    const fetchJson = vi.fn().mockResolvedValue({ ok: true, status: 200, data: tickets });
+    const fetchJson = vi.fn().mockResolvedValue(makeSuccessResponse(tickets));
     let capturedCrashCb: ((code: number | null) => void) | undefined;
 
     document.body.innerHTML = `
@@ -534,7 +567,7 @@ describe("polling", () => {
     const ticket = makeTicket({ id: "1", project_id: "proj-a", project_path: "/repos/alpha" });
     const fetchJson = vi
       .fn()
-      .mockResolvedValueOnce({ ok: true, status: 200, data: [ticket] })
+      .mockResolvedValueOnce(makeSuccessResponse([ticket]))
       .mockRejectedValueOnce(new Error("Netzwerkfehler"));
     let capturedCrashCb: ((code: number | null) => void) | undefined;
 
@@ -578,7 +611,7 @@ describe("backend-crashed display", () => {
     // there is the same one that fires in production.
     vi.useFakeTimers();
 
-    const fetchJson = vi.fn().mockResolvedValue({ ok: true, status: 200, data: [] });
+    const fetchJson = vi.fn().mockResolvedValue(makeSuccessResponse([]));
     let capturedCrashCb: ((code: number | null) => void) | undefined;
 
     document.body.innerHTML = `
@@ -604,7 +637,7 @@ describe("backend-crashed display", () => {
   it("callback with null does not throw and renders '?'", async () => {
     vi.useFakeTimers();
 
-    const fetchJson = vi.fn().mockResolvedValue({ ok: true, status: 200, data: [] });
+    const fetchJson = vi.fn().mockResolvedValue(makeSuccessResponse([]));
     let capturedCrashCb: ((code: number | null) => void) | undefined;
 
     document.body.innerHTML = `
@@ -633,7 +666,7 @@ describe("backend-crashed display", () => {
     vi.useFakeTimers();
 
     const ticket = makeTicket({ id: "1", project_id: "proj-a", project_path: "/repos/alpha" });
-    const fetchJson = vi.fn().mockResolvedValue({ ok: true, status: 200, data: [ticket] });
+    const fetchJson = vi.fn().mockResolvedValue(makeSuccessResponse([ticket]));
     let capturedCrashCb: ((code: number | null) => void) | undefined;
 
     document.body.innerHTML = `
@@ -667,5 +700,335 @@ describe("backend-crashed display", () => {
     // (5) Status bar still reads the crash message (not "Lädt Tickets…" or empty).
     expect(statusBar!.textContent).toContain("abgestürzt");
     expect(statusBar!.textContent).toContain("7");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// loadTickets — rate-limit resilience
+// ---------------------------------------------------------------------------
+
+describe("loadTickets — rate-limit resilience", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  beforeEach(() => {
+    document.body.innerHTML = `
+      <ul id="ticket-list"></ul>
+      <span id="ticket-count"></span>
+      <footer class="status-bar"></footer>
+    `;
+  });
+
+  it("rate_limited: status bar shows Rate-Limit message", async () => {
+    vi.useFakeTimers();
+
+    const ticket1 = makeTicket({ id: "1", project_id: "proj-a", project_path: "/repos/alpha" });
+    const ticket2 = makeTicket({ id: "2", project_id: "proj-a", project_path: "/repos/alpha" });
+
+    const fetchJson = vi
+      .fn()
+      .mockResolvedValueOnce(makeSuccessResponse([ticket1, ticket2]))
+      .mockResolvedValueOnce(makeRateLimitResponse([], 60, []));
+
+    (window as Window & typeof globalThis).backend = {
+      fetchJson,
+      onBackendCrashed: vi.fn(),
+    };
+
+    // First poll — success
+    await loadTickets();
+
+    // Second poll — rate-limited
+    await loadTickets();
+
+    const statusBar = document.querySelector(".status-bar");
+    expect(statusBar!.textContent).toContain("Rate-Limit");
+  });
+
+  it("rate_limited: list is not cleared (stale cards preserved)", async () => {
+    vi.useFakeTimers();
+
+    const ticket1 = makeTicket({ id: "1", project_id: "proj-a", project_path: "/repos/alpha" });
+    const ticket2 = makeTicket({ id: "2", project_id: "proj-a", project_path: "/repos/alpha" });
+
+    const fetchJson = vi
+      .fn()
+      .mockResolvedValueOnce(makeSuccessResponse([ticket1, ticket2]))
+      .mockResolvedValueOnce(makeRateLimitResponse([], 60, []));
+
+    (window as Window & typeof globalThis).backend = {
+      fetchJson,
+      onBackendCrashed: vi.fn(),
+    };
+
+    // First poll — success, renders 2 cards
+    await loadTickets();
+    expect(document.querySelectorAll(".ticket-card")).toHaveLength(2);
+
+    // Second poll — rate-limited, must NOT clear the list
+    await loadTickets();
+    expect(document.querySelectorAll(".ticket-card")).toHaveLength(2);
+  });
+
+  it("rate_limited: ticket-count badge preserves last good count", async () => {
+    vi.useFakeTimers();
+
+    const ticket1 = makeTicket({ id: "1", project_id: "proj-a", project_path: "/repos/alpha" });
+    const ticket2 = makeTicket({ id: "2", project_id: "proj-a", project_path: "/repos/alpha" });
+
+    const fetchJson = vi
+      .fn()
+      .mockResolvedValueOnce(makeSuccessResponse([ticket1, ticket2]))
+      .mockResolvedValueOnce(makeRateLimitResponse([], 60, []));
+
+    (window as Window & typeof globalThis).backend = {
+      fetchJson,
+      onBackendCrashed: vi.fn(),
+    };
+
+    // First poll — success
+    await loadTickets();
+    const countEl = document.getElementById("ticket-count");
+    expect(countEl!.textContent).toBe("2");
+
+    // Second poll — rate-limited, badge must still show "2"
+    await loadTickets();
+    expect(countEl!.textContent).toBe("2");
+  });
+
+  it("rate_limited: poll is paused after rate-limit response", async () => {
+    // Use a long retry_after (600s) so that advancing a few intervals (< 600s)
+    // does not trigger the backoff resumption, making it easy to assert the
+    // interval has been cleared.
+    vi.useFakeTimers();
+
+    const ticket = makeTicket({ id: "1", project_id: "proj-a", project_path: "/repos/alpha" });
+
+    const fetchJson = vi
+      .fn()
+      .mockResolvedValueOnce(makeSuccessResponse([ticket]))
+      .mockResolvedValue(makeRateLimitResponse([], 600, []));
+
+    let capturedCrashCb: ((code: number | null) => void) | undefined;
+
+    (window as Window & typeof globalThis).backend = {
+      fetchJson,
+      onBackendCrashed: vi.fn((cb) => { capturedCrashCb = cb; }),
+    };
+
+    // Run initRenderer to set up the poll
+    await initRenderer();
+
+    // Advance to trigger the rate-limit response
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
+    const callsAfterRateLimit = fetchJson.mock.calls.length;
+
+    // Advance three more intervals (180s) — well within the 600s backoff,
+    // so the poll should remain paused and fetchJson should NOT be called again.
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * 3);
+
+    expect(fetchJson.mock.calls.length).toBe(callsAfterRateLimit);
+
+    capturedCrashCb!(null);
+  });
+
+  it("rate_limited: poll resumes after retry_after elapses", async () => {
+    vi.useFakeTimers();
+
+    const ticket = makeTicket({ id: "1", project_id: "proj-a", project_path: "/repos/alpha" });
+
+    const fetchJson = vi
+      .fn()
+      .mockResolvedValueOnce(makeSuccessResponse([ticket]))
+      .mockResolvedValueOnce(makeRateLimitResponse([], 60, []))
+      .mockResolvedValue(makeSuccessResponse([ticket]));
+
+    let capturedCrashCb: ((code: number | null) => void) | undefined;
+
+    (window as Window & typeof globalThis).backend = {
+      fetchJson,
+      onBackendCrashed: vi.fn((cb) => { capturedCrashCb = cb; }),
+    };
+
+    await initRenderer();
+
+    // Trigger rate-limit response
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
+    const callsAfterRateLimit = fetchJson.mock.calls.length;
+
+    // Advance by retry_after (60s) + 1ms — the backoff setTimeout should fire
+    await vi.advanceTimersByTimeAsync(60 * 1000 + 1);
+
+    expect(fetchJson.mock.calls.length).toBeGreaterThan(callsAfterRateLimit);
+
+    capturedCrashCb!(null);
+  });
+
+  it("rate_limited: retry_after null uses 5-minute default backoff", async () => {
+    vi.useFakeTimers();
+
+    const ticket = makeTicket({ id: "1", project_id: "proj-a", project_path: "/repos/alpha" });
+
+    const fetchJson = vi
+      .fn()
+      .mockResolvedValueOnce(makeSuccessResponse([ticket]))
+      .mockResolvedValueOnce(makeRateLimitResponse([], null, []))
+      .mockResolvedValue(makeSuccessResponse([ticket]));
+
+    let capturedCrashCb: ((code: number | null) => void) | undefined;
+
+    (window as Window & typeof globalThis).backend = {
+      fetchJson,
+      onBackendCrashed: vi.fn((cb) => { capturedCrashCb = cb; }),
+    };
+
+    await initRenderer();
+
+    // Trigger rate-limit response (no Retry-After)
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
+    const callsAfterRateLimit = fetchJson.mock.calls.length;
+
+    // 299s elapsed — should NOT have resumed yet
+    await vi.advanceTimersByTimeAsync(299_000);
+    expect(fetchJson.mock.calls.length).toBe(callsAfterRateLimit);
+
+    // +1001ms more (total >300s = 5 min default) — should now have resumed
+    await vi.advanceTimersByTimeAsync(1_001);
+    expect(fetchJson.mock.calls.length).toBeGreaterThan(callsAfterRateLimit);
+
+    capturedCrashCb!(null);
+  });
+
+  it("partial failure: partial ticket list rendered, status shows N Projekt(e) nicht geladen, badge reflects partial count", async () => {
+    // poll_errors is non-null with rate_limited: false — the partial-failure branch.
+    const ticket = makeTicket({ id: "1", project_id: "proj-a", project_path: "/repos/alpha" });
+    const partialResponse = {
+      ok: true,
+      status: 200,
+      data: {
+        tickets: [ticket],
+        poll_errors: { rate_limited: false, retry_after: null, failed_projects: ["proj-b", "proj-c"] },
+      },
+    };
+
+    (window as Window & typeof globalThis).backend = {
+      fetchJson: vi.fn().mockResolvedValue(partialResponse),
+      onBackendCrashed: vi.fn(),
+    };
+
+    await loadTickets();
+
+    // The one ticket from the partial list must be rendered.
+    expect(document.querySelectorAll(".ticket-card")).toHaveLength(1);
+
+    // Status bar must mention the two failing projects.
+    const statusBar = document.querySelector(".status-bar");
+    expect(statusBar!.textContent).toContain("2 Projekt(e) nicht geladen");
+
+    // Badge reflects the partial count (1), not zero.
+    const countEl = document.getElementById("ticket-count");
+    expect(countEl!.textContent).toBe("1");
+  });
+
+  it("crash during backoff: fetchJson not called after retry_after elapses and crash status persists", async () => {
+    // Regression for fix 4: the backoffTimeoutId must be cancelled on crash so
+    // the pending resume cannot overwrite the crash status or re-arm the interval.
+    vi.useFakeTimers();
+
+    const ticket = makeTicket({ id: "1", project_id: "proj-a", project_path: "/repos/alpha" });
+
+    const fetchJson = vi
+      .fn()
+      .mockResolvedValueOnce(makeSuccessResponse([ticket]))
+      .mockResolvedValueOnce(makeRateLimitResponse([], 60, []))
+      .mockResolvedValue(makeSuccessResponse([ticket]));
+
+    let capturedCrashCb: ((code: number | null) => void) | undefined;
+
+    (window as Window & typeof globalThis).backend = {
+      fetchJson,
+      onBackendCrashed: vi.fn((cb) => { capturedCrashCb = cb; }),
+    };
+
+    await initRenderer();
+
+    // Trigger the rate-limited poll — starts a 60s backoff.
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
+    const callsAfterRateLimit = fetchJson.mock.calls.length;
+
+    // Backend crashes while we are still inside the backoff window.
+    capturedCrashCb!(99);
+
+    const statusBar = document.querySelector(".status-bar");
+    expect(statusBar!.textContent).toContain("abgestürzt");
+    expect(statusBar!.textContent).toContain("99");
+
+    // Advance past the retry_after — the cancelled timeout must NOT fire.
+    await vi.advanceTimersByTimeAsync(60 * 1000 + 1);
+
+    expect(fetchJson.mock.calls.length).toBe(callsAfterRateLimit);
+    // Crash message must still be showing — not overwritten by a resumed poll.
+    expect(statusBar!.textContent).toContain("abgestürzt");
+    expect(statusBar!.textContent).toContain("99");
+  });
+
+  it("rate_limited with non-empty data.tickets: fresh tickets rendered on cold start, status still shows Rate-Limit, backoff triggered", async () => {
+    // Regression for the blocking bug: when some projects succeed and others are
+    // rate-limited, data.tickets is non-empty. The old code returned early before
+    // calling renderTickets, leaving the board blank on a cold start.
+    vi.useFakeTimers();
+
+    const ticket = makeTicket({ id: "7", project_id: "proj-ok", project_path: "/repos/ok" });
+    // Cold start — DOM is already reset by beforeEach to an empty list.
+    const fetchJson = vi
+      .fn()
+      .mockResolvedValue(makeRateLimitResponse([ticket], 60, ["proj-limited"]));
+
+    let capturedCrashCb: ((code: number | null) => void) | undefined;
+    (window as Window & typeof globalThis).backend = {
+      fetchJson,
+      onBackendCrashed: vi.fn((cb) => { capturedCrashCb = cb; }),
+    };
+
+    await initRenderer();
+
+    // The healthy project's ticket must be in the DOM.
+    expect(document.querySelectorAll(".ticket-card")).toHaveLength(1);
+
+    // Status bar must still announce the rate-limit (honest indicator).
+    const statusBar = document.querySelector(".status-bar");
+    expect(statusBar!.textContent).toContain("Rate-Limit");
+
+    // Badge must reflect the rendered count.
+    const countEl = document.getElementById("ticket-count");
+    expect(countEl!.textContent).toBe("1");
+
+    // Backoff must have been triggered: advancing 3 normal intervals (180s,
+    // within the 60s backoff — wait, 60s < 180s so use a longer retry_after
+    // here). Verify the poll does NOT fire again immediately within 3 intervals
+    // that would be before the backoff expires.
+    // (retry_after is 60s, so after 61s the backoff timer fires — just confirm
+    // the interval was cleared by checking no extra calls before 60s elapses.)
+    const callsAfterInit = fetchJson.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(59_000); // just under the 60s backoff
+    expect(fetchJson.mock.calls.length).toBe(callsAfterInit); // interval cleared
+
+    capturedCrashCb!(null);
+  });
+
+  it("getLastTickets: cache reflects the most recently rendered ticket list", async () => {
+    const ticket = makeTicket({ id: "42", project_id: "proj-a", project_path: "/repos/alpha" });
+
+    (window as Window & typeof globalThis).backend = {
+      fetchJson: vi.fn().mockResolvedValue(makeSuccessResponse([ticket])),
+      onBackendCrashed: vi.fn(),
+    };
+
+    await loadTickets();
+
+    const cached = getLastTickets();
+    expect(cached).toHaveLength(1);
+    expect(cached[0].id).toBe("42");
   });
 });

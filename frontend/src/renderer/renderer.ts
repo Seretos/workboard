@@ -24,6 +24,22 @@ interface TicketRow {
   } | null;
 }
 
+interface PollErrors {
+  rate_limited: boolean;
+  retry_after: number | null;
+  failed_projects: string[];
+}
+
+interface TicketsResponse {
+  tickets: TicketRow[];
+  poll_errors: PollErrors | null;
+}
+
+// Cache of the last successfully fetched ticket list.  Stale preservation on a
+// rate-limit works by simply not calling renderTickets, so this value is not
+// read back on the rate-limit path — it is exported for test assertions only.
+let _lastTickets: TicketRow[] = [];
+
 function setStatus(text: string): void {
   const bar = document.querySelector(".status-bar");
   if (bar) bar.textContent = text;
@@ -108,6 +124,33 @@ function renderTickets(list: HTMLElement, tickets: TicketRow[]): void {
   }
 }
 
+// Module-level poll handle — set by startPoll(), cleared by pausePollForBackoff()
+// and the onBackendCrashed handler.
+let pollId: ReturnType<typeof setInterval> | null = null;
+
+// Handle for the pending backoff setTimeout so onBackendCrashed can cancel it
+// and prevent a stale resume from overwriting the crash status or re-arming
+// the interval against a dead backend.
+let backoffTimeoutId: ReturnType<typeof setTimeout> | null = null;
+
+function startPoll(): void {
+  pollId = setInterval(loadTickets, POLL_INTERVAL_MS);
+}
+
+function pausePollForBackoff(retryAfterSeconds: number | null): void {
+  if (pollId !== null) clearInterval(pollId);
+  pollId = null;
+  // Cancel any existing backoff timer before scheduling a new one, so
+  // back-to-back rate-limit responses don't stack up multiple resumes.
+  if (backoffTimeoutId !== null) clearTimeout(backoffTimeoutId);
+  const delay = (retryAfterSeconds ?? 300) * 1000; // default 5 minutes
+  backoffTimeoutId = setTimeout(() => {
+    backoffTimeoutId = null;
+    loadTickets();   // immediate fetch on resume
+    startPoll();     // re-register the normal 60s interval
+  }, delay);
+}
+
 async function loadTickets(): Promise<void> {
   const list = document.getElementById("ticket-list");
   if (!list) return;
@@ -116,13 +159,13 @@ async function loadTickets(): Promise<void> {
   // can take a couple of seconds — show progress instead of a blank panel.
   setStatus("Lädt Tickets…");
 
-  let tickets: TicketRow[];
+  let data: TicketsResponse;
   try {
     const response = await window.backend.fetchJson("/tickets");
     if (!response.ok) {
       throw new Error(`Backend antwortete mit HTTP ${response.status}`);
     }
-    tickets = response.data as TicketRow[];
+    data = response.data as TicketsResponse;
   } catch (err) {
     setStatus(`Fehler beim Laden: ${err instanceof Error ? err.message : String(err)}`);
     const countEl = document.getElementById("ticket-count");
@@ -130,12 +173,40 @@ async function loadTickets(): Promise<void> {
     return;
   }
 
-  renderTickets(list, tickets);
+  const poll_errors = data.poll_errors;
+
+  if (poll_errors?.rate_limited) {
+    // Rate-limited: some projects may still have returned tickets (the healthy
+    // ones). If fresh data arrived, render it and update the badge/cache so the
+    // board is never blank on a cold start. If data.tickets is empty, leave the
+    // existing cards untouched (stale preservation). Either way the rate-limit
+    // status message and backoff are always applied.
+    if (data.tickets.length > 0) {
+      renderTickets(list, data.tickets);
+      _lastTickets = data.tickets;
+      const countEl = document.getElementById("ticket-count");
+      if (countEl) countEl.textContent = String(data.tickets.length);
+    }
+    const time = new Date().toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
+    setStatus(`Rate-Limit erreicht – Stand: ${time}`);
+    pausePollForBackoff(poll_errors.retry_after);
+    return;
+  }
+
+  if (poll_errors !== null && poll_errors !== undefined) {
+    // Partial failure (some projects failed, but not rate-limited).
+    renderTickets(list, data.tickets);
+    _lastTickets = data.tickets;
+    setStatus(`${poll_errors.failed_projects.length} Projekt(e) nicht geladen`);
+  } else {
+    // Full success.
+    renderTickets(list, data.tickets);
+    _lastTickets = data.tickets;
+    setStatus(data.tickets.length === 0 ? "Keine offenen Tickets" : "");
+  }
 
   const countEl = document.getElementById("ticket-count");
-  if (countEl) countEl.textContent = String(tickets.length);
-
-  setStatus(tickets.length === 0 ? "Keine offenen Tickets" : "");
+  if (countEl) countEl.textContent = String(data.tickets.length);
 }
 
 // Starts the periodic poll and wires up the backend-crashed listener.
@@ -146,10 +217,15 @@ function initRenderer(): void {
 
   // Poll for the lifetime of the app. The interval is cleared if the backend
   // crashes so the crash message is not overwritten by a subsequent poll.
-  const pollId = setInterval(loadTickets, POLL_INTERVAL_MS);
+  startPoll();
 
   window.backend.onBackendCrashed((code: number | null) => {
-    clearInterval(pollId);
+    if (pollId !== null) clearInterval(pollId);
+    pollId = null;
+    // Also cancel any pending backoff resume so it cannot overwrite the crash
+    // status or re-arm the interval against a dead backend.
+    if (backoffTimeoutId !== null) clearTimeout(backoffTimeoutId);
+    backoffTimeoutId = null;
     setStatus(`Backend abgestürzt (Code ${code ?? "?"})`);
   });
 }
@@ -166,5 +242,13 @@ if (typeof window !== "undefined" && window.backend) {
 // tsc emits this verbatim (no `exports.` preamble) because there are no
 // top-level `export` declarations above.
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { setStatus, renderTickets, loadTickets, initRenderer, POLL_INTERVAL_MS };
+  module.exports = {
+    setStatus,
+    renderTickets,
+    loadTickets,
+    initRenderer,
+    POLL_INTERVAL_MS,
+    pausePollForBackoff,
+    getLastTickets: () => _lastTickets,
+  };
 }

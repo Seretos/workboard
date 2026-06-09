@@ -22,6 +22,7 @@ import logging
 import re
 from dataclasses import asdict
 
+import httpx
 from fastapi import APIRouter
 
 from lib_python_projects import ProjectConfig, resolve_token
@@ -89,6 +90,10 @@ def _fetch_project_tickets(project: ProjectConfig) -> list[dict]:
     rather than failing the whole board — one misconfigured project
     shouldn't blank out the others.
 
+    When the provider returns HTTP 403 or 429 (rate-limited), a sentinel
+    dict is returned instead of an empty list so the caller can distinguish
+    a genuine empty ticket list from a rate-limit failure.
+
     Each ticket row is enriched with an optional ``pull_request`` field:
     either ``{"number", "url", "status", "draft"}`` or ``null``. PR
     retrieval is best-effort: a failure degrades every ticket in the
@@ -108,6 +113,25 @@ def _fetch_project_tickets(project: ProjectConfig) -> list[dict]:
             token,
             TicketFilters(status="open", limit=_DEFAULT_LIMIT),
         )
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code in (403, 429):
+            log.warning(
+                "rate-limited on project %s: HTTP %s",
+                project.id, exc.response.status_code,
+            )
+            retry_after_raw = str(exc.response.headers.get("Retry-After", ""))
+            # RFC 7231 allows Retry-After to be an HTTP-date (e.g.
+            # "Thu, 01 Jan 2026 00:00:00 GMT"), not just delta-seconds.
+            # Treat any non-numeric value as absent so we never raise here.
+            retry_after: int | None = int(retry_after_raw) if retry_after_raw.isdigit() else None
+            return [{
+                "__rate_limit_error__": True,
+                "project_id": project.id,
+                "retry_after": retry_after,
+            }]
+        log.warning("skipping project %s: list_tickets failed: %s",
+                    project.id, exc)
+        return []
     except Exception as exc:  # noqa: BLE001 — resilience: skip, don't blank
         log.warning("skipping project %s: list_tickets failed: %s",
                     project.id, exc)
@@ -151,14 +175,52 @@ def _fetch_project_tickets(project: ProjectConfig) -> list[dict]:
 
 
 @router.get("/tickets")
-async def tickets() -> list:
+async def tickets() -> dict:
     """Return the open tickets across all configured projects.
 
     Per-project provider calls run concurrently in worker threads so the
     board's latency is the slowest single project, not the sum.
+
+    Returns a JSON envelope:
+    ``{"tickets": [...], "poll_errors": null | {"rate_limited": bool, ...}}``
+
+    ``poll_errors`` is ``null`` when all projects succeeded (including a
+    genuine empty ticket list).  When one or more projects were
+    rate-limited, ``poll_errors.rate_limited`` is ``true`` and the
+    ``tickets`` array contains only the rows from projects that did succeed.
     """
     result = load_all_projects()
     per_project = await asyncio.gather(
         *(asyncio.to_thread(_fetch_project_tickets, p) for p in result.projects)
     )
-    return [row for rows in per_project for row in rows]
+
+    ticket_rows: list[dict] = []
+    rate_limited = False
+    retry_after_max: int | None = None
+    failed_projects: list[str] = []
+
+    for rows in per_project:
+        for row in rows:
+            if row.get("__rate_limit_error__"):
+                rate_limited = True
+                failed_projects.append(row["project_id"])
+                ra = row.get("retry_after")
+                if ra is not None:
+                    retry_after_max = max(retry_after_max or 0, ra)
+            else:
+                ticket_rows.append(row)
+
+    # `failed_projects` is always populated alongside `rate_limited` today,
+    # so the `or failed_projects` guard is kept for defensive forward-compat
+    # should a future error class populate failed_projects without setting
+    # rate_limited.
+    poll_errors = (
+        {
+            "rate_limited": rate_limited,
+            "retry_after": retry_after_max,
+            "failed_projects": failed_projects,
+        }
+        if (rate_limited or failed_projects)
+        else None
+    )
+    return {"tickets": ticket_rows, "poll_errors": poll_errors}
