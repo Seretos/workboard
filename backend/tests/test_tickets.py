@@ -7,14 +7,13 @@ dispatching to each project's provider (mirroring the
 access happens.
 """
 
-import httpx
 from unittest.mock import MagicMock, patch
 
 from fastapi.testclient import TestClient
 
 from src.main import app
 from lib_python_projects.models import ProjectConfig, ProjectsLoadResult
-from lib_python_projects.providers.base import PullRequest, Ticket
+from lib_python_projects.providers.base import ProviderError, PullRequest, RateLimitError, Ticket
 
 
 client = TestClient(app)
@@ -104,17 +103,14 @@ def _fake_provider(
     return provider
 
 
-def _make_http_error(
-    status_code: int,
-    headers: dict | None = None,
-) -> httpx.HTTPStatusError:
-    """Build a minimal httpx.HTTPStatusError for simulating rate-limit responses."""
-    response = httpx.Response(status_code, headers=headers or {})
-    return httpx.HTTPStatusError(
-        "rate limited",
-        request=httpx.Request("GET", "https://api.github.com"),
-        response=response,
-    )
+def _make_rate_limit_error(retry_after: int | None) -> RateLimitError:
+    """Build a RateLimitError with the given retry_after value."""
+    return RateLimitError(429, "rate limited", retry_after=retry_after)
+
+
+def _make_provider_error(status: int) -> ProviderError:
+    """Build a generic ProviderError with the given HTTP status code."""
+    return ProviderError(status, f"provider error {status}")
 
 
 def test_tickets_ok() -> None:
@@ -187,7 +183,7 @@ def test_tickets_aggregates_across_projects() -> None:
 
 
 def test_tickets_skips_failing_project() -> None:
-    """A project whose provider raises is skipped, not fatal to the board."""
+    """A project whose provider raises ProviderError is skipped, not fatal to the board."""
     projects = [
         _sample_project("good", "org/good"),
         _sample_project("bad", "org/bad"),
@@ -196,7 +192,7 @@ def test_tickets_skips_failing_project() -> None:
     def fake_provider_for(project):
         if project.id == "bad":
             broken = MagicMock()
-            broken.list_tickets.side_effect = RuntimeError("boom")
+            broken.list_tickets.side_effect = _make_provider_error(500)
             broken.list_prs.return_value = ([], False)
             return broken
         return _fake_provider([_sample_ticket("good-1")])
@@ -205,10 +201,13 @@ def test_tickets_skips_failing_project() -> None:
                return_value=_make_result(projects)), \
          patch("src.api.tickets.provider_for", side_effect=fake_provider_for):
         response = client.get("/tickets")
-    items = response.json()["tickets"]
+    data = response.json()
+    items = data["tickets"]
     assert response.status_code == 200
     assert len(items) == 1
     assert items[0]["project_id"] == "good"
+    assert data["poll_errors"] is not None
+    assert "bad" in data["poll_errors"]["failed_projects"]
 
 
 def test_tickets_empty_list() -> None:
@@ -456,11 +455,9 @@ def test_tickets_pr_body_keyword_variants() -> None:
 
 
 def test_tickets_rate_limit_403_sets_flag() -> None:
-    """When list_tickets raises HTTP 403, poll_errors.rate_limited is True."""
+    """When list_tickets raises RateLimitError (403), poll_errors.rate_limited is True."""
     broken_provider = MagicMock()
-    broken_provider.list_tickets.side_effect = _make_http_error(
-        403, headers={"Retry-After": "120"}
-    )
+    broken_provider.list_tickets.side_effect = _make_rate_limit_error(retry_after=120)
     broken_provider.list_prs.return_value = ([], False)
 
     with patch("src.api.tickets.load_all_projects",
@@ -477,11 +474,9 @@ def test_tickets_rate_limit_403_sets_flag() -> None:
 
 
 def test_tickets_rate_limit_429_sets_flag() -> None:
-    """When list_tickets raises HTTP 429, poll_errors.rate_limited is True."""
+    """When list_tickets raises RateLimitError (429), poll_errors.rate_limited is True."""
     broken_provider = MagicMock()
-    broken_provider.list_tickets.side_effect = _make_http_error(
-        429, headers={"Retry-After": "120"}
-    )
+    broken_provider.list_tickets.side_effect = _make_rate_limit_error(retry_after=120)
     broken_provider.list_prs.return_value = ([], False)
 
     with patch("src.api.tickets.load_all_projects",
@@ -496,9 +491,9 @@ def test_tickets_rate_limit_429_sets_flag() -> None:
 
 
 def test_tickets_rate_limit_retry_after_absent() -> None:
-    """HTTP 403 with no Retry-After header → poll_errors.retry_after is None."""
+    """RateLimitError with no retry_after → poll_errors.retry_after is None."""
     broken_provider = MagicMock()
-    broken_provider.list_tickets.side_effect = _make_http_error(403)
+    broken_provider.list_tickets.side_effect = _make_rate_limit_error(retry_after=None)
     broken_provider.list_prs.return_value = ([], False)
 
     with patch("src.api.tickets.load_all_projects",
@@ -521,7 +516,7 @@ def test_tickets_rate_limit_excludes_sentinel_from_ticket_list() -> None:
     def fake_provider_for(project):
         if project.id == "rate-limited-proj":
             broken = MagicMock()
-            broken.list_tickets.side_effect = _make_http_error(403)
+            broken.list_tickets.side_effect = _make_rate_limit_error(retry_after=None)
             broken.list_prs.return_value = ([], False)
             return broken
         return _fake_provider([_sample_ticket("99", "Good ticket")])
@@ -547,15 +542,11 @@ def test_tickets_rate_limit_retry_after_max_across_projects() -> None:
     def fake_provider_for(project):
         if project.id == "proj-a":
             broken = MagicMock()
-            broken.list_tickets.side_effect = _make_http_error(
-                429, headers={"Retry-After": "60"}
-            )
+            broken.list_tickets.side_effect = _make_rate_limit_error(retry_after=60)
             broken.list_prs.return_value = ([], False)
             return broken
         broken = MagicMock()
-        broken.list_tickets.side_effect = _make_http_error(
-            429, headers={"Retry-After": "300"}
-        )
+        broken.list_tickets.side_effect = _make_rate_limit_error(retry_after=300)
         broken.list_prs.return_value = ([], False)
         return broken
 
@@ -580,10 +571,16 @@ def test_tickets_no_errors_poll_errors_null() -> None:
     assert data["poll_errors"] is None
 
 
-def test_tickets_generic_failure_does_not_set_rate_limited() -> None:
-    """A generic (non-HTTP) exception does not set poll_errors.rate_limited."""
+def test_tickets_generic_provider_failure_sets_failed_projects() -> None:
+    """A ProviderError (non-rate-limit) populates failed_projects without rate_limited.
+
+    Regression test: before the fix, ProviderError/GitHubError subclasses were
+    never caught by the dead `except httpx.HTTPStatusError` branch, so the
+    project was silently swallowed into [] and poll_errors stayed null — making
+    the board indistinguishable from a genuinely empty project.
+    """
     broken_provider = MagicMock()
-    broken_provider.list_tickets.side_effect = RuntimeError("generic failure")
+    broken_provider.list_tickets.side_effect = _make_provider_error(404)
     broken_provider.list_prs.return_value = ([], False)
 
     with patch("src.api.tickets.load_all_projects",
@@ -592,20 +589,42 @@ def test_tickets_generic_failure_does_not_set_rate_limited() -> None:
         response = client.get("/tickets")
 
     data = response.json()
+    assert data["poll_errors"] is not None
+    assert data["poll_errors"]["rate_limited"] is False
+    assert "workboard" in data["poll_errors"]["failed_projects"]
+
+
+def test_tickets_unknown_exception_does_not_set_poll_errors() -> None:
+    """A bare RuntimeError (not a ProviderError) hits the defensive except branch.
+
+    The project is skipped gracefully and poll_errors stays null because the
+    error is not a typed provider error — we don't know enough to surface it.
+    """
+    broken_provider = MagicMock()
+    broken_provider.list_tickets.side_effect = RuntimeError("totally unexpected")
+    broken_provider.list_prs.return_value = ([], False)
+
+    with patch("src.api.tickets.load_all_projects",
+               return_value=_make_result([_sample_project()])), \
+         patch("src.api.tickets.provider_for", return_value=broken_provider):
+        response = client.get("/tickets")
+
+    data = response.json()
+    assert response.status_code == 200
+    assert data["tickets"] == []
     assert data["poll_errors"] is None
 
 
 def test_tickets_rate_limit_retry_after_non_numeric() -> None:
-    """HTTP-date Retry-After (RFC 7231) must not crash the endpoint.
+    """RateLimitError with retry_after=None must not crash the endpoint.
 
-    ``int()`` on a date string such as "Thu, 01 Jan 2026 00:00:00 GMT" raises
-    ``ValueError``. The endpoint must return 200 with ``rate_limited: True``
-    and ``retry_after: None`` rather than a 500.
+    The lib already normalises non-numeric Retry-After values to None before
+    raising RateLimitError. The endpoint must return 200 with rate_limited: True
+    and retry_after: None rather than a 500.
     """
     broken_provider = MagicMock()
-    broken_provider.list_tickets.side_effect = _make_http_error(
-        403, headers={"Retry-After": "Thu, 01 Jan 2026 00:00:00 GMT"}
-    )
+    # retry_after=None simulates a non-numeric / absent Retry-After header
+    broken_provider.list_tickets.side_effect = _make_rate_limit_error(retry_after=None)
     broken_provider.list_prs.return_value = ([], False)
 
     with patch("src.api.tickets.load_all_projects",
