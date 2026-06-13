@@ -2,7 +2,7 @@
 
 A pinnable desktop board that surfaces your assigned tickets and spins up per-ticket worktrees, virtual desktops, and dev environments to parallelize agent-driven work.
 
-Electron + TypeScript desktop app. `tsc` compiles `src/` to `dist/`, electron-builder packages installers, and the release pipeline ships them for Windows, macOS, and Linux and registers the app in the marketplace.
+Electron + TypeScript desktop app with a React renderer. `electron-vite` builds `frontend/src/` to `out/`, electron-builder packages installers, and the release pipeline ships them for Windows, macOS, and Linux and registers the app in the marketplace.
 
 ## Contracts an agent won't infer from the tree
 
@@ -11,3 +11,7 @@ Electron + TypeScript desktop app. `tsc` compiles `src/` to `dist/`, electron-bu
 - **Required secret:** `MARKETPLACE_DISPATCH_TOKEN` — fine-grained PAT, `Contents: RW` + `Pull requests: RW` on `Seretos/agent-marketplace` only.
 - **`assets/icon.png` and `description.md` are release artifacts.** The dispatch payload sends them as `icon` and `description_url` raw URLs at the tag (`raw.githubusercontent.com/${repo}/${TAG}/assets/icon.png` and `.../description.md`). Both must exist at the release commit on `main`. Ship `assets/icon.png` from day one and fill in `description.md`'s Key Features before cutting v0.0.1, or the marketplace listing has no image / blurb.
 - **Installers are the `downloads` map.** electron-builder is configured with a deterministic `artifactName` (`${name}-${version}-${os}.${ext}`) so the release-asset filenames are predictable. The `${os}` macro expands to `win`, `mac`, or `linux` (not `windows`/`macos`/`linux`) — so the real filenames are e.g. `workboard-0.0.1-win.exe`, `workboard-0.0.1-mac.dmg`, `workboard-0.0.1-linux.AppImage`. `release.yml` uploads each installer as a GitHub Release asset and builds the `downloads` payload object using those filenames, mapping the marketplace platform keys `windows`/`macos`/`linux` to `https://github.com/${repo}/releases/download/${TAG}/<artifactName>`. If you change the targets (and thus the extensions: exe/dmg/AppImage) or the `artifactName`, update the URL computation in `release.yml` and `dispatch.yml` to match.
+
+## Building locally
+
+`pwsh scripts/build.ps1` builds an installer for the current OS, mirroring the release pipeline's per-OS job: it builds the Python backend into a standalone binary (PyInstaller → `backend-bin/<os>/`), runs `npm run build` (electron-vite → `out/`), then `electron-builder --publish never`. The installer lands in `release/` as `workboard-<version>-<os>.<ext>`. Needs Node 20+ and Python 3.12 (same as CI); Python deps install into a git-ignored `.venv-build/`. Useful flags: `-SkipBackend` (reuse the existing backend binary), `-Install` (force `npm ci` + pip refresh), `-Target win|mac|linux`. Version is pipeline-owned — pass `-Version X.Y.Z` only for a one-off stamped build (restored afterward, never committed).
