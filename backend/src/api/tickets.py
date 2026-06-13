@@ -136,13 +136,18 @@ def _fetch_project_tickets(project: ProjectConfig) -> list[dict]:
                     project.id, exc)
         return []
 
-    # Fetch open PRs for this project; degrade gracefully on failure.
-    try:
-        prs, _ = provider.list_prs(
-            project, token, PRFilters(status="open", limit=100)
-        )
-    except Exception as exc:  # noqa: BLE001
-        log.warning("skipping PR fetch for project %s: %s", project.id, exc)
+    # Fetch open PRs for this project; only bother when there are tickets to
+    # enrich — an empty ticket list has nothing to link PRs to. Degrade
+    # gracefully on failure.
+    if found:
+        try:
+            prs, _ = provider.list_prs(
+                project, token, PRFilters(status="open", limit=100)
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("skipping PR fetch for project %s: %s", project.id, exc)
+            prs = []
+    else:
         prs = []
 
     pr_map = _build_pr_map(prs)

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, afterEach } from "vitest";
+import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 import { useTicketPolling, POLL_INTERVAL_MS } from "./useTicketPolling";
 import type { TicketsClient } from "../client/TicketsClient";
@@ -71,8 +71,8 @@ describe("useTicketPolling — initial load", () => {
     vi.useRealTimers();
   });
 
-  it("POLL_INTERVAL_MS equals 60_000", () => {
-    expect(POLL_INTERVAL_MS).toBe(60_000);
+  it("POLL_INTERVAL_MS equals 300_000", () => {
+    expect(POLL_INTERVAL_MS).toBe(300_000);
   });
 
   it("after successful fetch: tickets and ticketCount reflect the response", async () => {
@@ -367,9 +367,11 @@ describe("useTicketPolling — rate-limit resilience", () => {
     });
     const callsAfterRateLimit = fetchJson.mock.calls.length;
 
-    // advance 3 more intervals (still within 600s backoff)
+    // advance 500s more — still within the 600s backoff window
+    // (POLL_INTERVAL_MS is 300s, so 3× would overshoot the 600s backoff;
+    // use a fixed 500_000ms that stays safely inside it)
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * 3);
+      await vi.advanceTimersByTimeAsync(500_000);
     });
 
     expect(fetchJson.mock.calls.length).toBe(callsAfterRateLimit);
@@ -496,5 +498,149 @@ describe("useTicketPolling — rate-limit resilience", () => {
     expect(fetchJson.mock.calls.length).toBe(callsAfterRateLimit);
     expect(result.current.status).toContain("abgestürzt");
     expect(result.current.status).toContain("99");
+  });
+});
+
+describe("useTicketPolling — focus refresh", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("focus event triggers one extra fetchJson call beyond the initial load", async () => {
+    const tickets = [makeTicket({ id: "1", project_id: "proj-a", project_path: "/repos/alpha" })];
+    const fetchJson = vi.fn().mockResolvedValue(makeSuccessResponse(tickets));
+    const client = makeMockClient(fetchJson);
+    const presenter = makeMockPresenter();
+
+    renderHook(() => useTicketPolling(client, presenter));
+
+    // Wait for the initial load to complete.
+    await act(async () => {
+      await Promise.resolve();
+    });
+    const callsAfterInit = fetchJson.mock.calls.length;
+
+    // Dispatch a focus event — should trigger an immediate load.
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+      await Promise.resolve();
+    });
+
+    expect(fetchJson.mock.calls.length).toBe(callsAfterInit + 1);
+  });
+
+  it("a second focus within 30s is throttled and produces no extra call", async () => {
+    const tickets = [makeTicket({ id: "1", project_id: "proj-a", project_path: "/repos/alpha" })];
+    const fetchJson = vi.fn().mockResolvedValue(makeSuccessResponse(tickets));
+    const client = makeMockClient(fetchJson);
+    const presenter = makeMockPresenter();
+
+    renderHook(() => useTicketPolling(client, presenter));
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    // First focus — should fire.
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+      await Promise.resolve();
+    });
+    const callsAfterFirstFocus = fetchJson.mock.calls.length;
+
+    // Advance 10s (still within the 30s throttle window).
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+
+    // Second focus — should be suppressed.
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+      await Promise.resolve();
+    });
+
+    expect(fetchJson.mock.calls.length).toBe(callsAfterFirstFocus);
+  });
+
+  it("a focus after advancing >30s triggers another call", async () => {
+    const tickets = [makeTicket({ id: "1", project_id: "proj-a", project_path: "/repos/alpha" })];
+    const fetchJson = vi.fn().mockResolvedValue(makeSuccessResponse(tickets));
+    const client = makeMockClient(fetchJson);
+    const presenter = makeMockPresenter();
+
+    renderHook(() => useTicketPolling(client, presenter));
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    // First focus.
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+      await Promise.resolve();
+    });
+    const callsAfterFirstFocus = fetchJson.mock.calls.length;
+
+    // Advance past the 30s throttle window.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(31_000);
+    });
+
+    // Second focus — 30s elapsed, should fire.
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+      await Promise.resolve();
+    });
+
+    expect(fetchJson.mock.calls.length).toBe(callsAfterFirstFocus + 1);
+  });
+
+  it("no focus-refresh while in backoff (rate-limited)", async () => {
+    const ticket = makeTicket({ id: "1", project_id: "proj-a", project_path: "/repos/alpha" });
+    const fetchJson = vi
+      .fn()
+      .mockResolvedValueOnce(makeSuccessResponse([ticket]))
+      // The poll-interval call that triggers the rate-limit.
+      .mockResolvedValue(makeRateLimitResponse([], 600, []));
+    let capturedCrashCb: ((code: number | null) => void) | undefined;
+    const onBackendCrashed = vi.fn((cb: (code: number | null) => void) => {
+      capturedCrashCb = cb;
+    });
+    const client = makeMockClient(fetchJson, onBackendCrashed);
+    const presenter = makeMockPresenter();
+
+    renderHook(() => useTicketPolling(client, presenter));
+
+    // Initial load.
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    // Trigger the rate-limit via the poll interval.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
+    });
+
+    // Now in 600s backoff. Record current call count.
+    const callsAfterRateLimit = fetchJson.mock.calls.length;
+
+    // Advance 31s (past throttle window) then fire focus.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(31_000);
+    });
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+      await Promise.resolve();
+    });
+
+    // The focus must have been suppressed — we are in backoff.
+    expect(fetchJson.mock.calls.length).toBe(callsAfterRateLimit);
+
+    // Cleanup: crash the backend so the backoff timeout is cancelled.
+    act(() => { capturedCrashCb?.(null); });
   });
 });

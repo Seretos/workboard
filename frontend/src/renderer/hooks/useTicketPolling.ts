@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import type { TicketsClient } from "../client/TicketsClient";
 import type { TicketRow, TicketsResponse } from "../types";
 
-export const POLL_INTERVAL_MS = 60_000;
+export const POLL_INTERVAL_MS = 300_000;
 
 export interface PollingState {
   tickets: TicketRow[];
@@ -21,6 +21,9 @@ export function useTicketPolling(
   const backoffTimeoutIdRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Keep a ref to the last good ticket list for stale-preservation on rate-limit.
   const lastTicketsRef = useRef<TicketRow[]>([]);
+  // Timestamp of the last focus-triggered refresh (0 = never). Used to throttle
+  // repeated window-focus events to at most one load per 30 seconds.
+  const lastFocusRefreshRef = useRef<number>(0);
 
   // pausePollForBackoff must be stable across renders — use a ref to avoid
   // re-creating it on every render while still seeing current ref values.
@@ -117,10 +120,23 @@ export function useTicketPolling(
       setStatus(`Backend abgestürzt (Code ${code ?? "?"})`);
     });
 
+    // Focus-refresh: when the user brings the window to front, trigger an
+    // immediate load — unless a backoff is active (we're rate-limited) or
+    // the last focus-refresh was less than 30 seconds ago.
+    function handleFocus(): void {
+      if (backoffTimeoutIdRef.current !== null) return; // backoff active — skip
+      const now = Date.now();
+      if (now - lastFocusRefreshRef.current < 30_000) return; // within 30s throttle
+      lastFocusRefreshRef.current = now;
+      loadTicketsRef.current();
+    }
+    window.addEventListener("focus", handleFocus);
+
     // Cleanup on unmount
     return () => {
       if (pollIdRef.current !== null) clearInterval(pollIdRef.current);
       if (backoffTimeoutIdRef.current !== null) clearTimeout(backoffTimeoutIdRef.current);
+      window.removeEventListener("focus", handleFocus);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

@@ -615,6 +615,25 @@ def test_tickets_unknown_exception_does_not_set_poll_errors() -> None:
     assert data["poll_errors"] is None
 
 
+def test_no_tickets_skips_list_prs() -> None:
+    """When a project returns 0 tickets, list_prs must not be called.
+
+    Regression test for the optimisation that guards list_prs behind a
+    non-empty ticket list — calling list_prs when there are no tickets to
+    enrich is a wasted round-trip.
+    """
+    provider = _fake_provider(tickets=[])
+
+    with patch("src.api.tickets.load_all_projects",
+               return_value=_make_result([_sample_project()])), \
+         patch("src.api.tickets.provider_for", return_value=provider):
+        response = client.get("/tickets")
+
+    assert response.status_code == 200
+    assert response.json()["tickets"] == []
+    provider.list_prs.assert_not_called()
+
+
 def test_tickets_rate_limit_retry_after_non_numeric() -> None:
     """RateLimitError with retry_after=None must not crash the endpoint.
 
