@@ -155,6 +155,12 @@ export function spawnBackend(): Promise<number> {
       if (!handshakeDone) {
         handshakeDone = true;
         clearTimeout(timer);
+        // To diagnose WHY it exited: the Python traceback is on the backend's
+        // stderr (logged below as "[backend stderr]"). A normally-launched
+        // packaged app has no attached console, so that log is invisible —
+        // run the backend binary directly to see the traceback:
+        //   dev:      backend-bin/<os>/workboard-backend[.exe]
+        //   packaged: release/<os>-unpacked/resources/backend/workboard-backend[.exe]
         reject(new Error(`Backend exited with code ${code} before handshake`));
       } else {
         // Post-startup crash: broadcast to all renderer windows
