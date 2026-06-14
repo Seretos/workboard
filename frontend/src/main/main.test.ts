@@ -607,7 +607,7 @@ describe("resolveProjectsConfigPath", () => {
     vi.resetModules();
   });
 
-  it("dev mode → path ends with .seretos/projects.yml", async () => {
+  it("dev mode → null (backend falls through to ~/.seretos/projects.yml)", async () => {
     const electron = await import("electron");
     // @ts-ignore
     electron.app.isPackaged = false;
@@ -615,8 +615,7 @@ describe("resolveProjectsConfigPath", () => {
     const { resolveProjectsConfigPath } = await import("./main.js");
     const result = resolveProjectsConfigPath();
 
-    expect(result).not.toBeNull();
-    expect(result!.replace(/\\/g, "/")).toMatch(/\.seretos\/projects\.yml$/);
+    expect(result).toBeNull();
   });
 
   it("packaged mode → null (backend falls through to ~/.seretos/projects.yml)", async () => {
@@ -823,7 +822,7 @@ describe("spawnBackend", () => {
     vi.resetModules();
   });
 
-  it("spawn is called with env containing PROJECT_ISSUES_CONFIG equal to resolveProjectsConfigPath()", async () => {
+  it("dev mode → spawn env does NOT set PROJECT_ISSUES_CONFIG", async () => {
     const electron = await import("electron");
     // @ts-ignore
     electron.app.isPackaged = false;
@@ -840,24 +839,17 @@ describe("spawnBackend", () => {
       stderr: { on: vi.fn() },
       on: vi.fn(),
     };
+    // Reset first so call history from earlier tests doesn't bleed in.
+    (cpMock.spawn as ReturnType<typeof vi.fn>).mockReset();
     (cpMock.spawn as ReturnType<typeof vi.fn>).mockReturnValue(fakeChild);
 
-    const { spawnBackend, resolveProjectsConfigPath } = await import("./main.js");
-    const expectedConfigPath = resolveProjectsConfigPath();
-
+    const { spawnBackend } = await import("./main.js");
     // Start but don't await — handshake never resolves in this test; we only
     // care that spawn was called with the right options.
     spawnBackend().catch(() => {});
 
-    expect(cpMock.spawn).toHaveBeenCalledWith(
-      expect.any(String),
-      [],
-      expect.objectContaining({
-        env: expect.objectContaining({
-          PROJECT_ISSUES_CONFIG: expectedConfigPath,
-        }),
-      })
-    );
+    const spawnEnv = (cpMock.spawn as ReturnType<typeof vi.fn>).mock.calls[0][2].env;
+    expect(spawnEnv).not.toHaveProperty("PROJECT_ISSUES_CONFIG");
   });
 
   it("packaged mode → spawn env does NOT set PROJECT_ISSUES_CONFIG", async () => {

@@ -46,22 +46,13 @@ export function resolveIconPath(): string {
 // Returns the config file to pin via PROJECT_ISSUES_CONFIG, or null to let
 // the backend resolve it itself.
 //
-//   - Development: pin the repo-local `.seretos/projects.yml` so running
-//     the board from this checkout uses the in-repo (read-only) project
-//     list regardless of the launch CWD.
-//   - Packaged: return null. The installed app is a personal cross-project
-//     board started outside any git repo, so the backend falls through to
-//     the user-level `~/.seretos/projects.yml` (the lib's home default).
-//     We deliberately do NOT bundle/ship a config — every user supplies
-//     their own project list.
+// Both dev and packaged modes return null: the repo-local `.seretos/` was
+// removed (commit cac84da) and the backend's own resolution chain — a
+// git-boundary walk then the home default `~/.seretos/projects.yml` — is
+// the correct source of truth in all cases. We deliberately do NOT pin a
+// path here; every user supplies their own project list.
 // ---------------------------------------------------------------------------
 export function resolveProjectsConfigPath(): string | null {
-  if (!app.isPackaged) {
-    // Development: .seretos/ is at repo root (two up from dist/main/)
-    return path.join(__dirname, "../../.seretos/projects.yml");
-  }
-
-  // Packaged: no override — backend uses ~/.seretos/projects.yml.
   return null;
 }
 
@@ -114,10 +105,9 @@ export function spawnBackend(): Promise<number> {
       return;
     }
 
-    // Pin the config only when resolveProjectsConfigPath returns a path
-    // (dev). In the packaged app it returns null, so we leave
-    // PROJECT_ISSUES_CONFIG unset and the backend falls through to the
-    // user-level ~/.seretos/projects.yml.
+    // resolveProjectsConfigPath() always returns null in both dev and packaged
+    // modes, so PROJECT_ISSUES_CONFIG is never set here. The backend uses its
+    // own resolution chain (git-boundary walk → ~/.seretos/projects.yml).
     const configPath = resolveProjectsConfigPath();
     const childEnv = { ...process.env };
     if (configPath !== null) {
