@@ -11,6 +11,11 @@ Provider calls are blocking (sync `httpx`), so the per-project fetches
 run concurrently in worker threads — otherwise N projects serialise into
 N round-trips and the board waits seconds before the first paint.
 
+GitHub projects are batched into a single GraphQL call via
+`fetch_open_board` (lib-python-projects v0.1.19+) instead of N individual
+REST list_tickets + list_prs pairs. Non-GitHub providers continue through
+the per-project worker-thread fan-out unchanged.
+
 Previously this endpoint returned the *projects* themselves (one
 `load_projects()` call, dumped verbatim), which is why the board only
 ever showed the auto-discovered repo and never any actual tickets.
@@ -25,6 +30,7 @@ from dataclasses import asdict
 from fastapi import APIRouter
 
 from lib_python_projects import ProjectConfig, resolve_token
+from lib_python_projects.providers import BatchProjectResult, fetch_open_board
 from lib_python_projects.providers.base import (
     PRFilters,
     ProviderError,
@@ -85,6 +91,100 @@ def _build_pr_map(prs: list[PullRequest]) -> dict[int, PullRequest]:
                     pr_map[num] = pr
 
     return pr_map
+
+
+def _enrich_rows(
+    project: ProjectConfig,
+    tickets: list,
+    prs: list[PullRequest],
+) -> list[dict]:
+    """Build enriched row dicts from a project's ticket+PR lists.
+
+    Shared by both the per-project REST path and the GitHub batch path so
+    the row shape is identical regardless of which fetch strategy was used.
+    """
+    pr_map = _build_pr_map(prs)
+    rows: list[dict] = []
+    for ticket in tickets:
+        row = asdict(ticket)
+        row["provider"] = project.provider
+        row["project_id"] = project.id
+        row["project_path"] = project.path
+
+        ticket_num = int(ticket.id) if ticket.id.isdigit() else None
+        matched_pr = pr_map.get(ticket_num) if ticket_num is not None else None
+        if matched_pr is not None:
+            row["pull_request"] = {
+                "number": matched_pr.number,
+                "url": matched_pr.url,
+                "status": matched_pr.status,
+                "draft": matched_pr.draft,
+            }
+        else:
+            row["pull_request"] = None
+
+        rows.append(row)
+    return rows
+
+
+def _fetch_github_batch(projects: list[ProjectConfig]) -> list[dict]:
+    """Fetch all GitHub projects in a single GraphQL batch call. Never raises.
+
+    Mirrors the resilience contract of ``_fetch_project_tickets``: any
+    failure degrades gracefully to sentinel dicts rather than propagating an
+    exception that would blank the entire board.
+
+    NOTE on token handling: a single ambient token is resolved from the first
+    project. All GitHub projects in a standard config share one credential
+    (``GITHUB_TOKEN`` env var or per-project token). If future configurations
+    had genuinely different per-project tokens, you would need to group
+    projects by ``resolve_token(p)`` and issue one ``fetch_open_board`` call
+    per unique token — using a single token across projects with different
+    credentials would silently mis-authenticate. That grouping is out of scope
+    for now; this comment is the loud warning for the future implementer.
+
+    Returns a flat list of either enriched ticket rows or sentinel dicts
+    (``__rate_limit_error__`` / ``__fail_error__``) in the same shape that
+    the aggregation loop in ``tickets()`` expects.
+    """
+    if not projects:
+        return []
+
+    token = resolve_token(projects[0])
+
+    try:
+        results: list[BatchProjectResult] = fetch_open_board(projects, token)
+    except RateLimitError as exc:
+        log.warning(
+            "rate-limited on GitHub batch fetch: HTTP %s, retry_after=%s",
+            exc.status, exc.retry_after,
+        )
+        return [
+            {
+                "__rate_limit_error__": True,
+                "project_id": p.id,
+                "retry_after": exc.retry_after,
+            }
+            for p in projects
+        ]
+    except ProviderError as exc:
+        log.warning("GitHub batch fetch failed with provider error: %s", exc)
+        return [{"__fail_error__": True, "project_id": p.id} for p in projects]
+    except Exception as exc:  # noqa: BLE001 — resilience: degrade, don't blank the board
+        log.warning("GitHub batch fetch failed unexpectedly: %s", exc)
+        return [{"__fail_error__": True, "project_id": p.id} for p in projects]
+
+    rows: list[dict] = []
+    for result in results:
+        if result.error is not None:
+            log.warning(
+                "skipping project %s in batch result: %s",
+                result.project.id, result.error,
+            )
+            rows.append({"__fail_error__": True, "project_id": result.project.id})
+        else:
+            rows.extend(_enrich_rows(result.project, result.tickets, result.pull_requests))
+    return rows
 
 
 def _fetch_project_tickets(project: ProjectConfig) -> list[dict]:
@@ -150,32 +250,7 @@ def _fetch_project_tickets(project: ProjectConfig) -> list[dict]:
     else:
         prs = []
 
-    pr_map = _build_pr_map(prs)
-
-    rows: list[dict] = []
-    for ticket in found:
-        row = asdict(ticket)
-        # Enrich each ticket with its originating project context so a
-        # card can show which repo/provider it belongs to.
-        row["provider"] = project.provider
-        row["project_id"] = project.id
-        row["project_path"] = project.path
-
-        # Attach matched PR info or null.
-        ticket_num = int(ticket.id) if ticket.id.isdigit() else None
-        matched_pr = pr_map.get(ticket_num) if ticket_num is not None else None
-        if matched_pr is not None:
-            row["pull_request"] = {
-                "number": matched_pr.number,
-                "url": matched_pr.url,
-                "status": matched_pr.status,
-                "draft": matched_pr.draft,
-            }
-        else:
-            row["pull_request"] = None
-
-        rows.append(row)
-    return rows
+    return _enrich_rows(project, found, prs)
 
 
 @router.get("/tickets")
@@ -194,9 +269,19 @@ async def tickets() -> dict:
     ``tickets`` array contains only the rows from projects that did succeed.
     """
     result = load_all_projects()
-    per_project = await asyncio.gather(
-        *(asyncio.to_thread(_fetch_project_tickets, p) for p in result.projects)
+
+    github_projects = [p for p in result.projects if p.provider == "github"]
+    other_projects = [p for p in result.projects if p.provider != "github"]
+
+    # GitHub projects are fetched in a single GraphQL batch call.
+    # Non-GitHub projects use the per-project REST fan-out unchanged.
+    gathered = await asyncio.gather(
+        asyncio.to_thread(_fetch_github_batch, github_projects),
+        *(asyncio.to_thread(_fetch_project_tickets, p) for p in other_projects),
     )
+
+    # Flatten: first element is the batch result list, rest are per-project lists.
+    per_project = list(gathered)
 
     ticket_rows: list[dict] = []
     rate_limited = False
