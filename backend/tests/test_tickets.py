@@ -3,11 +3,12 @@
 The endpoint aggregates open tickets across every configured project by
 dispatching to each project's provider (mirroring the
 `agent-project-issues` plugin). Tests patch `load_all_projects` and
-`provider_for` in the endpoint's namespace so no network or config disk
-access happens.
+`fetch_open_board` (for GitHub projects) or `provider_for` (for non-GitHub
+projects) in the endpoint's namespace so no network or config disk access
+happens.
 """
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 from fastapi.testclient import TestClient
 
@@ -31,13 +32,21 @@ def _make_result(projects: list[ProjectConfig]) -> ProjectsLoadResult:
 def _sample_project(
     project_id: str = "workboard",
     path: str = "Seretos/workboard",
+    provider: str = "github",
 ) -> ProjectConfig:
     return ProjectConfig(
         id=project_id,
         description="Workboard project",
-        provider="github",
+        provider=provider,
         path=path,
     )
+
+
+def _sample_gitlab_project(
+    project_id: str = "gl-proj",
+    path: str = "org/gl-proj",
+) -> ProjectConfig:
+    return _sample_project(project_id=project_id, path=path, provider="gitlab")
 
 
 def _sample_ticket(ticket_id: str = "42", title: str = "Fix the thing") -> Ticket:
@@ -113,42 +122,61 @@ def _make_provider_error(status: int) -> ProviderError:
     return ProviderError(status, f"provider error {status}")
 
 
+def _make_batch_result(project: ProjectConfig, tickets=None, prs=None, error=None):
+    """Build a BatchProjectResult-like MagicMock for a single project."""
+    from lib_python_projects.providers import BatchProjectResult
+    return BatchProjectResult(
+        project=project,
+        tickets=tickets if tickets is not None else [],
+        pull_requests=prs if prs is not None else [],
+        error=error,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Basic HTTP contract tests
+# ---------------------------------------------------------------------------
+
 def test_tickets_ok() -> None:
     """GET /tickets returns HTTP 200."""
+    project = _sample_project()
     with patch("src.api.tickets.load_all_projects",
-               return_value=_make_result([_sample_project()])), \
-         patch("src.api.tickets.provider_for",
-               return_value=_fake_provider([_sample_ticket()])):
+               return_value=_make_result([project])), \
+         patch("src.api.tickets.fetch_open_board",
+               return_value=[_make_batch_result(project, tickets=[_sample_ticket()])]):
         response = client.get("/tickets")
     assert response.status_code == 200
 
 
 def test_tickets_json_array() -> None:
     """GET /tickets body is a JSON object with a 'tickets' array."""
+    project = _sample_project()
     with patch("src.api.tickets.load_all_projects",
-               return_value=_make_result([_sample_project()])), \
-         patch("src.api.tickets.provider_for",
-               return_value=_fake_provider([_sample_ticket()])):
+               return_value=_make_result([project])), \
+         patch("src.api.tickets.fetch_open_board",
+               return_value=[_make_batch_result(project, tickets=[_sample_ticket()])]):
         response = client.get("/tickets")
     assert isinstance(response.json()["tickets"], list)
 
 
 def test_tickets_content_type() -> None:
     """GET /tickets Content-Type contains application/json."""
+    project = _sample_project()
     with patch("src.api.tickets.load_all_projects",
-               return_value=_make_result([_sample_project()])), \
-         patch("src.api.tickets.provider_for",
-               return_value=_fake_provider([_sample_ticket()])):
+               return_value=_make_result([project])), \
+         patch("src.api.tickets.fetch_open_board",
+               return_value=[_make_batch_result(project, tickets=[_sample_ticket()])]):
         response = client.get("/tickets")
     assert "application/json" in response.headers["content-type"]
 
 
 def test_tickets_item_fields() -> None:
     """Each row carries the provider ticket fields plus project context."""
+    project = _sample_project()
     with patch("src.api.tickets.load_all_projects",
-               return_value=_make_result([_sample_project()])), \
-         patch("src.api.tickets.provider_for",
-               return_value=_fake_provider([_sample_ticket("7", "Wire the icon")])):
+               return_value=_make_result([project])), \
+         patch("src.api.tickets.fetch_open_board",
+               return_value=[_make_batch_result(project, tickets=[_sample_ticket("7", "Wire the icon")])]):
         response = client.get("/tickets")
     items = response.json()["tickets"]
     assert len(items) == 1
@@ -165,17 +193,17 @@ def test_tickets_item_fields() -> None:
 
 def test_tickets_aggregates_across_projects() -> None:
     """Tickets from every configured project are flattened into one list."""
-    projects = [
-        _sample_project("a", "org/a"),
-        _sample_project("b", "org/b"),
-    ]
-
-    def fake_provider_for(project):
-        return _fake_provider([_sample_ticket(f"{project.id}-1")])
+    proj_a = _sample_project("a", "org/a")
+    proj_b = _sample_project("b", "org/b")
+    projects = [proj_a, proj_b]
 
     with patch("src.api.tickets.load_all_projects",
                return_value=_make_result(projects)), \
-         patch("src.api.tickets.provider_for", side_effect=fake_provider_for):
+         patch("src.api.tickets.fetch_open_board",
+               return_value=[
+                   _make_batch_result(proj_a, tickets=[_sample_ticket("a-1")]),
+                   _make_batch_result(proj_b, tickets=[_sample_ticket("b-1")]),
+               ]):
         response = client.get("/tickets")
     items = response.json()["tickets"]
     assert len(items) == 2
@@ -183,23 +211,18 @@ def test_tickets_aggregates_across_projects() -> None:
 
 
 def test_tickets_skips_failing_project() -> None:
-    """A project whose provider raises ProviderError is skipped, not fatal to the board."""
-    projects = [
-        _sample_project("good", "org/good"),
-        _sample_project("bad", "org/bad"),
-    ]
-
-    def fake_provider_for(project):
-        if project.id == "bad":
-            broken = MagicMock()
-            broken.list_tickets.side_effect = _make_provider_error(500)
-            broken.list_prs.return_value = ([], False)
-            return broken
-        return _fake_provider([_sample_ticket("good-1")])
+    """A project whose batch entry has an error is skipped, not fatal to the board."""
+    proj_good = _sample_project("good", "org/good")
+    proj_bad = _sample_project("bad", "org/bad")
+    projects = [proj_good, proj_bad]
 
     with patch("src.api.tickets.load_all_projects",
                return_value=_make_result(projects)), \
-         patch("src.api.tickets.provider_for", side_effect=fake_provider_for):
+         patch("src.api.tickets.fetch_open_board",
+               return_value=[
+                   _make_batch_result(proj_good, tickets=[_sample_ticket("good-1")]),
+                   _make_batch_result(proj_bad, error="repo not found"),
+               ]):
         response = client.get("/tickets")
     data = response.json()
     items = data["tickets"]
@@ -234,12 +257,14 @@ def test_tickets_loads_config_with_correct_filename() -> None:
     """The backend resolves projects from `projects.yml` (not the lib default).
 
     The `load_projects` call now lives in `src.providers.load_all_projects`,
-    so the filename contract is asserted there. `provider_for` is patched
+    so the filename contract is asserted there. `fetch_open_board` is patched
     so the sample project's tickets resolve without a network call.
     """
-    mock_load = MagicMock(return_value=_make_result([_sample_project()]))
+    project = _sample_project()
+    mock_load = MagicMock(return_value=_make_result([project]))
     with patch("src.providers.load_projects", mock_load), \
-         patch("src.api.tickets.provider_for", return_value=_fake_provider([])):
+         patch("src.api.tickets.fetch_open_board",
+               return_value=[_make_batch_result(project, tickets=[])]):
         client.get("/tickets")
     mock_load.assert_called_once_with(
         config_filename="projects.yml",
@@ -265,11 +290,12 @@ def test_tickets_file_not_found_returns_500() -> None:
 
 def test_tickets_pr_linked_via_body_keyword() -> None:
     """A PR with 'Fixes #42' in its body is linked to ticket id='42'."""
+    project = _sample_project()
     pr = _sample_pr(number=7, ticket_number=42)
     with patch("src.api.tickets.load_all_projects",
-               return_value=_make_result([_sample_project()])), \
-         patch("src.api.tickets.provider_for",
-               return_value=_fake_provider([_sample_ticket("42")], prs=[pr])):
+               return_value=_make_result([project])), \
+         patch("src.api.tickets.fetch_open_board",
+               return_value=[_make_batch_result(project, tickets=[_sample_ticket("42")], prs=[pr])]):
         response = client.get("/tickets")
     items = response.json()["tickets"]
     assert len(items) == 1
@@ -283,11 +309,12 @@ def test_tickets_pr_linked_via_body_keyword() -> None:
 
 def test_tickets_pr_null_when_no_match() -> None:
     """A PR referencing ticket #99 leaves ticket #42 with pull_request=null."""
+    project = _sample_project()
     pr = _sample_pr(number=3, ticket_number=99)
     with patch("src.api.tickets.load_all_projects",
-               return_value=_make_result([_sample_project()])), \
-         patch("src.api.tickets.provider_for",
-               return_value=_fake_provider([_sample_ticket("42")], prs=[pr])):
+               return_value=_make_result([project])), \
+         patch("src.api.tickets.fetch_open_board",
+               return_value=[_make_batch_result(project, tickets=[_sample_ticket("42")], prs=[pr])]):
         response = client.get("/tickets")
     items = response.json()["tickets"]
     assert len(items) == 1
@@ -296,10 +323,11 @@ def test_tickets_pr_null_when_no_match() -> None:
 
 def test_tickets_pr_null_when_no_prs() -> None:
     """No PRs at all → pull_request is null on every ticket."""
+    project = _sample_project()
     with patch("src.api.tickets.load_all_projects",
-               return_value=_make_result([_sample_project()])), \
-         patch("src.api.tickets.provider_for",
-               return_value=_fake_provider([_sample_ticket("42")], prs=[])):
+               return_value=_make_result([project])), \
+         patch("src.api.tickets.fetch_open_board",
+               return_value=[_make_batch_result(project, tickets=[_sample_ticket("42")], prs=[])]):
         response = client.get("/tickets")
     items = response.json()["tickets"]
     assert len(items) == 1
@@ -308,11 +336,12 @@ def test_tickets_pr_null_when_no_prs() -> None:
 
 def test_tickets_pr_linked_via_branch_name() -> None:
     """A PR with head ref 'fix/42-some-description' is linked to ticket id='42'."""
+    project = _sample_project()
     pr = _sample_pr(number=5, body="", ref="fix/42-some-description")
     with patch("src.api.tickets.load_all_projects",
-               return_value=_make_result([_sample_project()])), \
-         patch("src.api.tickets.provider_for",
-               return_value=_fake_provider([_sample_ticket("42")], prs=[pr])):
+               return_value=_make_result([project])), \
+         patch("src.api.tickets.fetch_open_board",
+               return_value=[_make_batch_result(project, tickets=[_sample_ticket("42")], prs=[pr])]):
         response = client.get("/tickets")
     items = response.json()["tickets"]
     assert len(items) == 1
@@ -323,11 +352,12 @@ def test_tickets_pr_linked_via_branch_name() -> None:
 
 def test_tickets_pr_linked_via_branch_name_plain_prefix() -> None:
     """A PR with head ref '42-description' (no subdirectory) is also matched."""
+    project = _sample_project()
     pr = _sample_pr(number=6, body="", ref="42-description")
     with patch("src.api.tickets.load_all_projects",
-               return_value=_make_result([_sample_project()])), \
-         patch("src.api.tickets.provider_for",
-               return_value=_fake_provider([_sample_ticket("42")], prs=[pr])):
+               return_value=_make_result([project])), \
+         patch("src.api.tickets.fetch_open_board",
+               return_value=[_make_batch_result(project, tickets=[_sample_ticket("42")], prs=[pr])]):
         response = client.get("/tickets")
     items = response.json()["tickets"]
     assert len(items) == 1
@@ -344,14 +374,15 @@ def test_tickets_pr_branch_heuristic_skipped_when_body_matched() -> None:
     PR #7 attached — the branch heuristic is a fallback and must be
     suppressed once the body scan produced any match for that PR.
     """
+    project = _sample_project()
     pr = _sample_pr(number=7, body="Fixes #42", ref="43-old-description")
     ticket_a = _sample_ticket("42", "Ticket A")
     ticket_b = _sample_ticket("43", "Ticket B")
 
     with patch("src.api.tickets.load_all_projects",
-               return_value=_make_result([_sample_project()])), \
-         patch("src.api.tickets.provider_for",
-               return_value=_fake_provider([ticket_a, ticket_b], prs=[pr])):
+               return_value=_make_result([project])), \
+         patch("src.api.tickets.fetch_open_board",
+               return_value=[_make_batch_result(project, tickets=[ticket_a, ticket_b], prs=[pr])]):
         response = client.get("/tickets")
 
     assert response.status_code == 200
@@ -370,13 +401,14 @@ def test_tickets_pr_branch_heuristic_skipped_when_body_matched() -> None:
 
 
 def test_tickets_pr_fetch_failure_does_not_suppress_ticket() -> None:
-    """If list_prs raises, tickets are still returned with pull_request=null."""
+    """If list_prs raises for a non-GitHub project, tickets are still returned with pull_request=null."""
+    project = _sample_gitlab_project()
     broken_provider = MagicMock()
     broken_provider.list_tickets.return_value = ([_sample_ticket("42")], False)
     broken_provider.list_prs.side_effect = RuntimeError("network error")
 
     with patch("src.api.tickets.load_all_projects",
-               return_value=_make_result([_sample_project()])), \
+               return_value=_make_result([project])), \
          patch("src.api.tickets.provider_for", return_value=broken_provider):
         response = client.get("/tickets")
     assert response.status_code == 200
@@ -392,22 +424,19 @@ def test_tickets_pr_field_always_present() -> None:
     confirm the key is present regardless of match state and across
     aggregated projects.
     """
-    projects = [
-        _sample_project("proj-a", "org/a"),
-        _sample_project("proj-b", "org/b"),
-    ]
+    proj_a = _sample_project("proj-a", "org/a")
+    proj_b = _sample_project("proj-b", "org/b")
+    projects = [proj_a, proj_b]
 
-    def fake_provider_for(project):
-        if project.id == "proj-a":
-            # proj-a has a PR linking to ticket 1.
-            pr = _sample_pr(number=10, ticket_number=1)
-            return _fake_provider([_sample_ticket("1")], prs=[pr])
-        # proj-b has no PRs.
-        return _fake_provider([_sample_ticket("2")], prs=[])
+    pr = _sample_pr(number=10, ticket_number=1)
 
     with patch("src.api.tickets.load_all_projects",
                return_value=_make_result(projects)), \
-         patch("src.api.tickets.provider_for", side_effect=fake_provider_for):
+         patch("src.api.tickets.fetch_open_board",
+               return_value=[
+                   _make_batch_result(proj_a, tickets=[_sample_ticket("1")], prs=[pr]),
+                   _make_batch_result(proj_b, tickets=[_sample_ticket("2")], prs=[]),
+               ]):
         response = client.get("/tickets")
 
     items = response.json()["tickets"]
@@ -427,6 +456,7 @@ def test_tickets_pr_body_keyword_variants() -> None:
 
     Tests: closes, closed, fix, fixes, fixed, resolve, resolves, resolved.
     """
+    project = _sample_project()
     keywords = [
         "Closes #42",
         "closed #42",
@@ -440,9 +470,9 @@ def test_tickets_pr_body_keyword_variants() -> None:
     for kw in keywords:
         pr = _sample_pr(number=1, body=kw)
         with patch("src.api.tickets.load_all_projects",
-                   return_value=_make_result([_sample_project()])), \
-             patch("src.api.tickets.provider_for",
-                   return_value=_fake_provider([_sample_ticket("42")], prs=[pr])):
+                   return_value=_make_result([project])), \
+             patch("src.api.tickets.fetch_open_board",
+                   return_value=[_make_batch_result(project, tickets=[_sample_ticket("42")], prs=[pr])]):
             response = client.get("/tickets")
         items = response.json()["tickets"]
         assert items[0]["pull_request"] is not None, \
@@ -455,14 +485,12 @@ def test_tickets_pr_body_keyword_variants() -> None:
 
 
 def test_tickets_rate_limit_403_sets_flag() -> None:
-    """When list_tickets raises RateLimitError (403), poll_errors.rate_limited is True."""
-    broken_provider = MagicMock()
-    broken_provider.list_tickets.side_effect = _make_rate_limit_error(retry_after=120)
-    broken_provider.list_prs.return_value = ([], False)
-
+    """When fetch_open_board raises RateLimitError (403), poll_errors.rate_limited is True."""
+    project = _sample_project()
     with patch("src.api.tickets.load_all_projects",
-               return_value=_make_result([_sample_project()])), \
-         patch("src.api.tickets.provider_for", return_value=broken_provider):
+               return_value=_make_result([project])), \
+         patch("src.api.tickets.fetch_open_board",
+               side_effect=_make_rate_limit_error(retry_after=120)):
         response = client.get("/tickets")
 
     assert response.status_code == 200
@@ -474,14 +502,12 @@ def test_tickets_rate_limit_403_sets_flag() -> None:
 
 
 def test_tickets_rate_limit_429_sets_flag() -> None:
-    """When list_tickets raises RateLimitError (429), poll_errors.rate_limited is True."""
-    broken_provider = MagicMock()
-    broken_provider.list_tickets.side_effect = _make_rate_limit_error(retry_after=120)
-    broken_provider.list_prs.return_value = ([], False)
-
+    """When fetch_open_board raises RateLimitError (429), poll_errors.rate_limited is True."""
+    project = _sample_project()
     with patch("src.api.tickets.load_all_projects",
-               return_value=_make_result([_sample_project()])), \
-         patch("src.api.tickets.provider_for", return_value=broken_provider):
+               return_value=_make_result([project])), \
+         patch("src.api.tickets.fetch_open_board",
+               side_effect=_make_rate_limit_error(retry_after=120)):
         response = client.get("/tickets")
 
     assert response.status_code == 200
@@ -492,13 +518,11 @@ def test_tickets_rate_limit_429_sets_flag() -> None:
 
 def test_tickets_rate_limit_retry_after_absent() -> None:
     """RateLimitError with no retry_after → poll_errors.retry_after is None."""
-    broken_provider = MagicMock()
-    broken_provider.list_tickets.side_effect = _make_rate_limit_error(retry_after=None)
-    broken_provider.list_prs.return_value = ([], False)
-
+    project = _sample_project()
     with patch("src.api.tickets.load_all_projects",
-               return_value=_make_result([_sample_project()])), \
-         patch("src.api.tickets.provider_for", return_value=broken_provider):
+               return_value=_make_result([project])), \
+         patch("src.api.tickets.fetch_open_board",
+               side_effect=_make_rate_limit_error(retry_after=None)):
         response = client.get("/tickets")
 
     data = response.json()
@@ -508,51 +532,40 @@ def test_tickets_rate_limit_retry_after_absent() -> None:
 
 def test_tickets_rate_limit_excludes_sentinel_from_ticket_list() -> None:
     """One rate-limited project + one good project → only good project's ticket."""
-    projects = [
-        _sample_project("rate-limited-proj", "org/limited"),
-        _sample_project("good-proj", "org/good"),
-    ]
+    proj_limited = _sample_project("rate-limited-proj", "org/limited")
+    proj_good = _sample_project("good-proj", "org/good")
+    projects = [proj_limited, proj_good]
 
-    def fake_provider_for(project):
-        if project.id == "rate-limited-proj":
-            broken = MagicMock()
-            broken.list_tickets.side_effect = _make_rate_limit_error(retry_after=None)
-            broken.list_prs.return_value = ([], False)
-            return broken
-        return _fake_provider([_sample_ticket("99", "Good ticket")])
-
+    # Both are GitHub projects so both go through the batch path.
+    # Simulate a whole-batch rate-limit — both projects get sentinels.
     with patch("src.api.tickets.load_all_projects",
                return_value=_make_result(projects)), \
-         patch("src.api.tickets.provider_for", side_effect=fake_provider_for):
+         patch("src.api.tickets.fetch_open_board",
+               side_effect=_make_rate_limit_error(retry_after=None)):
         response = client.get("/tickets")
 
     data = response.json()
-    assert len(data["tickets"]) == 1
-    assert data["tickets"][0]["project_id"] == "good-proj"
+    assert data["tickets"] == []
     assert data["poll_errors"]["rate_limited"] is True
 
 
 def test_tickets_rate_limit_retry_after_max_across_projects() -> None:
-    """Two rate-limited projects → retry_after is the maximum of both."""
-    projects = [
-        _sample_project("proj-a", "org/a"),
-        _sample_project("proj-b", "org/b"),
-    ]
+    """Two rate-limited GitHub projects → retry_after is the maximum of both.
 
-    def fake_provider_for(project):
-        if project.id == "proj-a":
-            broken = MagicMock()
-            broken.list_tickets.side_effect = _make_rate_limit_error(retry_after=60)
-            broken.list_prs.return_value = ([], False)
-            return broken
-        broken = MagicMock()
-        broken.list_tickets.side_effect = _make_rate_limit_error(retry_after=300)
-        broken.list_prs.return_value = ([], False)
-        return broken
+    With the batch path, the whole-batch RateLimitError carries the
+    retry_after from the response. Two projects in the same batch
+    produce sentinels with the same retry_after value; the max is itself.
+    This test verifies that the sentinel retry_after flows through
+    correctly and poll_errors.retry_after equals that value.
+    """
+    proj_a = _sample_project("proj-a", "org/a")
+    proj_b = _sample_project("proj-b", "org/b")
+    projects = [proj_a, proj_b]
 
     with patch("src.api.tickets.load_all_projects",
                return_value=_make_result(projects)), \
-         patch("src.api.tickets.provider_for", side_effect=fake_provider_for):
+         patch("src.api.tickets.fetch_open_board",
+               side_effect=_make_rate_limit_error(retry_after=300)):
         response = client.get("/tickets")
 
     data = response.json()
@@ -561,10 +574,11 @@ def test_tickets_rate_limit_retry_after_max_across_projects() -> None:
 
 def test_tickets_no_errors_poll_errors_null() -> None:
     """When all projects succeed, poll_errors is null."""
+    project = _sample_project()
     with patch("src.api.tickets.load_all_projects",
-               return_value=_make_result([_sample_project()])), \
-         patch("src.api.tickets.provider_for",
-               return_value=_fake_provider([_sample_ticket()])):
+               return_value=_make_result([project])), \
+         patch("src.api.tickets.fetch_open_board",
+               return_value=[_make_batch_result(project, tickets=[_sample_ticket()])]):
         response = client.get("/tickets")
 
     data = response.json()
@@ -572,20 +586,18 @@ def test_tickets_no_errors_poll_errors_null() -> None:
 
 
 def test_tickets_generic_provider_failure_sets_failed_projects() -> None:
-    """A ProviderError (non-rate-limit) populates failed_projects without rate_limited.
+    """A ProviderError (non-rate-limit) from fetch_open_board populates failed_projects.
 
     Regression test: before the fix, ProviderError/GitHubError subclasses were
     never caught by the dead `except httpx.HTTPStatusError` branch, so the
     project was silently swallowed into [] and poll_errors stayed null — making
     the board indistinguishable from a genuinely empty project.
     """
-    broken_provider = MagicMock()
-    broken_provider.list_tickets.side_effect = _make_provider_error(404)
-    broken_provider.list_prs.return_value = ([], False)
-
+    project = _sample_project()
     with patch("src.api.tickets.load_all_projects",
-               return_value=_make_result([_sample_project()])), \
-         patch("src.api.tickets.provider_for", return_value=broken_provider):
+               return_value=_make_result([project])), \
+         patch("src.api.tickets.fetch_open_board",
+               side_effect=_make_provider_error(404)):
         response = client.get("/tickets")
 
     data = response.json()
@@ -595,43 +607,46 @@ def test_tickets_generic_provider_failure_sets_failed_projects() -> None:
 
 
 def test_tickets_unknown_exception_does_not_set_poll_errors() -> None:
-    """A bare RuntimeError (not a ProviderError) hits the defensive except branch.
+    """A bare RuntimeError from fetch_open_board degrades gracefully; board is not blanked.
 
-    The project is skipped gracefully and poll_errors stays null because the
-    error is not a typed provider error — we don't know enough to surface it.
+    Regression test: _fetch_github_batch must honour the same "Never raises"
+    contract as _fetch_project_tickets. An unexpected exception (network
+    timeout, JSON decode error, lib bug) must degrade to __fail_error__
+    sentinels rather than propagating a 500 that blanks the entire board.
+    The project shows up in failed_projects; rate_limited stays False.
     """
-    broken_provider = MagicMock()
-    broken_provider.list_tickets.side_effect = RuntimeError("totally unexpected")
-    broken_provider.list_prs.return_value = ([], False)
-
+    project = _sample_project()
     with patch("src.api.tickets.load_all_projects",
-               return_value=_make_result([_sample_project()])), \
-         patch("src.api.tickets.provider_for", return_value=broken_provider):
+               return_value=_make_result([project])), \
+         patch("src.api.tickets.fetch_open_board",
+               side_effect=RuntimeError("totally unexpected")):
         response = client.get("/tickets")
 
-    data = response.json()
     assert response.status_code == 200
+    data = response.json()
     assert data["tickets"] == []
-    assert data["poll_errors"] is None
+    assert data["poll_errors"] is not None
+    assert data["poll_errors"]["rate_limited"] is False
+    assert "workboard" in data["poll_errors"]["failed_projects"]
 
 
 def test_no_tickets_skips_list_prs() -> None:
-    """When a project returns 0 tickets, list_prs must not be called.
+    """When a GitHub batch project returns 0 tickets, no PRs need to be fetched.
 
-    Regression test for the optimisation that guards list_prs behind a
-    non-empty ticket list — calling list_prs when there are no tickets to
-    enrich is a wasted round-trip.
+    The batch call returns an empty tickets list (and no PRs) for the project.
+    fetch_open_board is called exactly once; no provider_for call happens.
     """
-    provider = _fake_provider(tickets=[])
+    project = _sample_project()
+    mock_batch = MagicMock(return_value=[_make_batch_result(project, tickets=[], prs=[])])
 
     with patch("src.api.tickets.load_all_projects",
-               return_value=_make_result([_sample_project()])), \
-         patch("src.api.tickets.provider_for", return_value=provider):
+               return_value=_make_result([project])), \
+         patch("src.api.tickets.fetch_open_board", mock_batch):
         response = client.get("/tickets")
 
     assert response.status_code == 200
     assert response.json()["tickets"] == []
-    provider.list_prs.assert_not_called()
+    mock_batch.assert_called_once()
 
 
 def test_tickets_rate_limit_retry_after_non_numeric() -> None:
@@ -641,17 +656,242 @@ def test_tickets_rate_limit_retry_after_non_numeric() -> None:
     raising RateLimitError. The endpoint must return 200 with rate_limited: True
     and retry_after: None rather than a 500.
     """
-    broken_provider = MagicMock()
-    # retry_after=None simulates a non-numeric / absent Retry-After header
-    broken_provider.list_tickets.side_effect = _make_rate_limit_error(retry_after=None)
-    broken_provider.list_prs.return_value = ([], False)
-
+    project = _sample_project()
     with patch("src.api.tickets.load_all_projects",
-               return_value=_make_result([_sample_project()])), \
-         patch("src.api.tickets.provider_for", return_value=broken_provider):
+               return_value=_make_result([project])), \
+         patch("src.api.tickets.fetch_open_board",
+               side_effect=_make_rate_limit_error(retry_after=None)):
         response = client.get("/tickets")
 
     assert response.status_code == 200
     data = response.json()
     assert data["poll_errors"]["rate_limited"] is True
     assert data["poll_errors"]["retry_after"] is None
+
+
+# ---------------------------------------------------------------------------
+# New batch-path tests (ticket #42 acceptance criteria).
+# ---------------------------------------------------------------------------
+
+
+def test_tickets_github_uses_single_batch_call() -> None:
+    """Two GitHub projects produce exactly one fetch_open_board call with both projects.
+
+    Regression test for the core acceptance criterion: N GitHub projects must
+    not produce N individual REST calls.
+    """
+    proj_a = _sample_project("a", "org/a")
+    proj_b = _sample_project("b", "org/b")
+    projects = [proj_a, proj_b]
+
+    mock_batch = MagicMock(return_value=[
+        _make_batch_result(proj_a, tickets=[_sample_ticket("1")]),
+        _make_batch_result(proj_b, tickets=[_sample_ticket("2")]),
+    ])
+    mock_provider_for = MagicMock()
+
+    with patch("src.api.tickets.load_all_projects",
+               return_value=_make_result(projects)), \
+         patch("src.api.tickets.fetch_open_board", mock_batch), \
+         patch("src.api.tickets.provider_for", mock_provider_for):
+        response = client.get("/tickets")
+
+    assert response.status_code == 200
+    # fetch_open_board called exactly once with both projects.
+    mock_batch.assert_called_once()
+    call_args = mock_batch.call_args[0][0]  # first positional arg (projects list)
+    assert {p.id for p in call_args} == {"a", "b"}
+    # provider_for must NOT have been called for GitHub projects.
+    mock_provider_for.assert_not_called()
+
+
+def test_tickets_batch_returns_tickets_with_enrichment() -> None:
+    """Batch result rows carry correct project_id/provider/project_path/pull_request."""
+    proj_a = _sample_project("proj-a", "org/a")
+    proj_b = _sample_project("proj-b", "org/b")
+    projects = [proj_a, proj_b]
+
+    pr_a = _sample_pr(number=10, ticket_number=1)
+
+    with patch("src.api.tickets.load_all_projects",
+               return_value=_make_result(projects)), \
+         patch("src.api.tickets.fetch_open_board",
+               return_value=[
+                   _make_batch_result(proj_a, tickets=[_sample_ticket("1")], prs=[pr_a]),
+                   _make_batch_result(proj_b, tickets=[_sample_ticket("2")], prs=[]),
+               ]):
+        response = client.get("/tickets")
+
+    items = response.json()["tickets"]
+    assert len(items) == 2
+    by_proj = {i["project_id"]: i for i in items}
+
+    assert by_proj["proj-a"]["provider"] == "github"
+    assert by_proj["proj-a"]["project_path"] == "org/a"
+    assert by_proj["proj-a"]["pull_request"] is not None
+    assert by_proj["proj-a"]["pull_request"]["number"] == 10
+
+    assert by_proj["proj-b"]["provider"] == "github"
+    assert by_proj["proj-b"]["project_path"] == "org/b"
+    assert by_proj["proj-b"]["pull_request"] is None
+
+
+def test_tickets_batch_rate_limit_sets_poll_errors() -> None:
+    """fetch_open_board raises RateLimitError → poll_errors.rate_limited True, tickets empty."""
+    proj_a = _sample_project("proj-a", "org/a")
+    proj_b = _sample_project("proj-b", "org/b")
+    projects = [proj_a, proj_b]
+
+    with patch("src.api.tickets.load_all_projects",
+               return_value=_make_result(projects)), \
+         patch("src.api.tickets.fetch_open_board",
+               side_effect=RateLimitError(429, "rate limited", retry_after=120)):
+        response = client.get("/tickets")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["tickets"] == []
+    assert data["poll_errors"]["rate_limited"] is True
+    assert data["poll_errors"]["retry_after"] == 120
+    # Both GitHub project IDs should be in failed_projects.
+    assert set(data["poll_errors"]["failed_projects"]) == {"proj-a", "proj-b"}
+
+
+def test_tickets_batch_rate_limit_retry_after_none() -> None:
+    """RateLimitError with retry_after=None does not crash; poll_errors.retry_after is None."""
+    project = _sample_project()
+    with patch("src.api.tickets.load_all_projects",
+               return_value=_make_result([project])), \
+         patch("src.api.tickets.fetch_open_board",
+               side_effect=RateLimitError(429, "rate limited", retry_after=None)):
+        response = client.get("/tickets")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["poll_errors"]["rate_limited"] is True
+    assert data["poll_errors"]["retry_after"] is None
+
+
+def test_tickets_batch_partial_failure_github_plus_other_provider() -> None:
+    """GitHub batch rate-limited + GitLab project succeeds → GitLab ticket present."""
+    github_proj = _sample_project("gh-proj", "org/gh")
+    gitlab_proj = _sample_gitlab_project("gl-proj", "org/gl")
+    projects = [github_proj, gitlab_proj]
+
+    gitlab_provider = _fake_provider([_sample_ticket("99", "GitLab ticket")])
+
+    with patch("src.api.tickets.load_all_projects",
+               return_value=_make_result(projects)), \
+         patch("src.api.tickets.fetch_open_board",
+               side_effect=RateLimitError(429, "rate limited", retry_after=60)), \
+         patch("src.api.tickets.provider_for", return_value=gitlab_provider):
+        response = client.get("/tickets")
+
+    data = response.json()
+    assert response.status_code == 200
+    # GitLab ticket should be present.
+    assert len(data["tickets"]) == 1
+    assert data["tickets"][0]["project_id"] == "gl-proj"
+    # GitHub project should be rate-limited.
+    assert data["poll_errors"]["rate_limited"] is True
+    assert "gh-proj" in data["poll_errors"]["failed_projects"]
+
+
+def test_tickets_batch_per_project_error_sets_failed_projects() -> None:
+    """BatchProjectResult.error non-None → that project ID in failed_projects, rate_limited False."""
+    proj_ok = _sample_project("ok-proj", "org/ok")
+    proj_err = _sample_project("err-proj", "org/err")
+    projects = [proj_ok, proj_err]
+
+    with patch("src.api.tickets.load_all_projects",
+               return_value=_make_result(projects)), \
+         patch("src.api.tickets.fetch_open_board",
+               return_value=[
+                   _make_batch_result(proj_ok, tickets=[_sample_ticket("1")]),
+                   _make_batch_result(proj_err, error="repo alias not found"),
+               ]):
+        response = client.get("/tickets")
+
+    data = response.json()
+    assert response.status_code == 200
+    assert len(data["tickets"]) == 1
+    assert data["tickets"][0]["project_id"] == "ok-proj"
+    assert data["poll_errors"] is not None
+    assert data["poll_errors"]["rate_limited"] is False
+    assert "err-proj" in data["poll_errors"]["failed_projects"]
+
+
+def test_tickets_non_github_skips_batch_call() -> None:
+    """Only GitLab projects → fetch_open_board never called, GitLab tickets returned."""
+    gitlab_proj = _sample_gitlab_project("gl-proj", "org/gl")
+    gitlab_provider = _fake_provider([_sample_ticket("55", "GitLab issue")])
+    mock_batch = MagicMock()
+
+    with patch("src.api.tickets.load_all_projects",
+               return_value=_make_result([gitlab_proj])), \
+         patch("src.api.tickets.fetch_open_board", mock_batch), \
+         patch("src.api.tickets.provider_for", return_value=gitlab_provider):
+        response = client.get("/tickets")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["tickets"]) == 1
+    assert data["tickets"][0]["project_id"] == "gl-proj"
+    assert data["poll_errors"] is None
+    # _fetch_github_batch short-circuits on an empty projects list and returns
+    # [] before ever calling fetch_open_board — so the mock must be untouched.
+    mock_batch.assert_not_called()
+
+
+def test_tickets_empty_github_projects_no_batch_call() -> None:
+    """Zero projects → fetch_open_board not called; response is empty tickets, null poll_errors."""
+    mock_batch = MagicMock()
+
+    with patch("src.api.tickets.load_all_projects",
+               return_value=_make_result([])), \
+         patch("src.api.tickets.fetch_open_board", mock_batch):
+        response = client.get("/tickets")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["tickets"] == []
+    assert data["poll_errors"] is None
+    mock_batch.assert_not_called()
+
+
+def test_tickets_batch_pr_body_keyword_enrichment() -> None:
+    """Batch PR with 'Fixes #42' body + ticket id 42 → PR attached to ticket 42."""
+    project = _sample_project()
+    pr = _sample_pr(number=7, ticket_number=42)
+    ticket = _sample_ticket("42")
+
+    with patch("src.api.tickets.load_all_projects",
+               return_value=_make_result([project])), \
+         patch("src.api.tickets.fetch_open_board",
+               return_value=[_make_batch_result(project, tickets=[ticket], prs=[pr])]):
+        response = client.get("/tickets")
+
+    items = response.json()["tickets"]
+    assert len(items) == 1
+    pr_field = items[0]["pull_request"]
+    assert pr_field is not None
+    assert pr_field["number"] == 7
+
+
+def test_tickets_batch_pr_branch_name_enrichment() -> None:
+    """Batch PR head ref 'fix/42-description', no body match → ticket 42 gets PR via branch heuristic."""
+    project = _sample_project()
+    pr = _sample_pr(number=5, body="", ref="fix/42-description")
+    ticket = _sample_ticket("42")
+
+    with patch("src.api.tickets.load_all_projects",
+               return_value=_make_result([project])), \
+         patch("src.api.tickets.fetch_open_board",
+               return_value=[_make_batch_result(project, tickets=[ticket], prs=[pr])]):
+        response = client.get("/tickets")
+
+    items = response.json()["tickets"]
+    assert len(items) == 1
+    pr_field = items[0]["pull_request"]
+    assert pr_field is not None
+    assert pr_field["number"] == 5
