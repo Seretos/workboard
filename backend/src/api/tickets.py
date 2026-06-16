@@ -41,6 +41,12 @@ from lib_python_projects.providers.base import (
 
 from src.providers import load_all_projects, provider_for
 
+try:
+    from lib_python_worktree import WorktreeRecord, YamlStateStore
+    _WORKTREE_LIB_AVAILABLE = True
+except ImportError:  # pragma: no cover — missing in test env until installed
+    _WORKTREE_LIB_AVAILABLE = False
+
 log = logging.getLogger("workboard.tickets")
 
 router = APIRouter()
@@ -93,6 +99,45 @@ def _build_pr_map(prs: list[PullRequest]) -> dict[int, PullRequest]:
     return pr_map
 
 
+def _norm_repo_root(p: str) -> str:
+    """Normalise a repo-root path for cross-OS equality checks.
+
+    Converts backslashes to forward slashes, strips a trailing slash, and
+    lower-cases the whole string so Windows drive-letter case differences
+    (``C:/`` vs ``c:/``) do not prevent matches.
+    """
+    return p.replace("\\", "/").rstrip("/").lower()
+
+
+def _build_worktree_map(local_path: str | None) -> "dict[int, WorktreeRecord]":
+    """Build a ticket-number → WorktreeRecord mapping for a project's local checkout.
+
+    Loads the shared agent-worktree state store (~/.agent-worktree/state.yaml),
+    filters records whose repo_root matches local_path, then extracts ticket
+    numbers from branch names using _BRANCH_NUM_RE.  Returns an empty dict when
+    the library is absent, local_path is None, or the state file doesn't exist.
+    """
+    if not _WORKTREE_LIB_AVAILABLE or not local_path:
+        return {}
+    local_path_norm = _norm_repo_root(local_path)
+    try:
+        store = YamlStateStore()
+        records = store.list()
+    except Exception as exc:  # noqa: BLE001 — degrade gracefully, never crash board
+        log.debug("worktree store unavailable: %s", exc)
+        return {}
+    wt_map: "dict[int, WorktreeRecord]" = {}
+    for rec in records:
+        if _norm_repo_root(rec.repo_root) != local_path_norm:
+            continue
+        branch_m = _BRANCH_NUM_RE.match(rec.branch)
+        if branch_m:
+            num = int(branch_m.group(1))
+            if num not in wt_map:
+                wt_map[num] = rec
+    return wt_map
+
+
 def _enrich_rows(
     project: ProjectConfig,
     tickets: list,
@@ -104,6 +149,7 @@ def _enrich_rows(
     the row shape is identical regardless of which fetch strategy was used.
     """
     pr_map = _build_pr_map(prs)
+    wt_map = _build_worktree_map(getattr(project, "local_path", None))
     rows: list[dict] = []
     for ticket in tickets:
         row = asdict(ticket)
@@ -122,6 +168,16 @@ def _enrich_rows(
             }
         else:
             row["pull_request"] = None
+
+        matched_wt = wt_map.get(ticket_num) if ticket_num is not None else None
+        if matched_wt is not None:
+            row["worktree"] = {
+                "path": matched_wt.path,
+                "branch": matched_wt.branch,
+                "status": matched_wt.status,
+            }
+        else:
+            row["worktree"] = None
 
         rows.append(row)
     return rows

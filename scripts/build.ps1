@@ -215,7 +215,7 @@ try {
             # (exit 1 before the BACKEND_PORT handshake). Verify the runtime
             # deps actually import before trusting the cache.
             Write-Step "Verify build venv has backend deps"
-            & $venvPython -c "import lib_python_projects, lib_python_config, ruamel.yaml, PyInstaller" 2>$null
+            & $venvPython -c "import lib_python_projects, lib_python_config, ruamel.yaml, lib_python_worktree, PyInstaller" 2>$null
             if ($LASTEXITCODE -eq 0) {
                 Write-Host "Build venv satisfies backend deps - skipping pip install (pass -Install to force a refresh)"
             }

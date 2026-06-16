@@ -104,7 +104,7 @@ else {
     # built against an older pin can be missing the domain lib (same stale-venv
     # trap as in build.ps1). Probe before trusting the cache.
     Write-Step "Verify test venv has backend deps"
-    & $venvPython -c "import lib_python_projects" 2>$null
+    & $venvPython -c "import lib_python_projects, lib_python_worktree" 2>$null
     if ($LASTEXITCODE -eq 0) {
         Write-Host "Test venv satisfies backend deps - skipping pip install (pass -Install to force a refresh)"
     }

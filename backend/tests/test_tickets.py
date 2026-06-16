@@ -895,3 +895,234 @@ def test_tickets_batch_pr_branch_name_enrichment() -> None:
     pr_field = items[0]["pull_request"]
     assert pr_field is not None
     assert pr_field["number"] == 5
+
+
+# ---------------------------------------------------------------------------
+# New tests for the worktree enrichment feature (ticket #53).
+# ---------------------------------------------------------------------------
+
+
+def _sample_worktree_record(
+    repo_root: str = "E:/development/workboard",
+    branch: str = "fix/42-some-description",
+    path: str = "C:/worktrees/workboard-fix-42",
+    status: str = "idle",
+) -> MagicMock:
+    """Return a mock WorktreeRecord with the given fields."""
+    rec = MagicMock()
+    rec.repo_root = repo_root
+    rec.branch = branch
+    rec.path = path
+    rec.status = status
+    return rec
+
+
+def test_tickets_worktree_field_always_present() -> None:
+    """Every row always contains the 'worktree' key (null or object).
+
+    Exercises two projects — one with a matched worktree, one without — to
+    confirm the key is present regardless of match state and across
+    aggregated projects.
+    """
+    proj_a = _sample_project("proj-a", "org/a")
+    proj_b = _sample_project("proj-b", "org/b")
+    projects = [proj_a, proj_b]
+
+    wt_record = _sample_worktree_record(branch="fix/1-my-feature")
+    # proj-a ticket 1 gets a worktree; proj-b ticket 2 does not.
+    def fake_wt_map(local_path):
+        if local_path and "a" in str(local_path):
+            return {1: wt_record}
+        return {}
+
+    with patch("src.api.tickets.load_all_projects",
+               return_value=_make_result(projects)), \
+         patch("src.api.tickets.fetch_open_board",
+               return_value=[
+                   _make_batch_result(proj_a, tickets=[_sample_ticket("1")], prs=[]),
+                   _make_batch_result(proj_b, tickets=[_sample_ticket("2")], prs=[]),
+               ]), \
+         patch("src.api.tickets._build_worktree_map", side_effect=fake_wt_map):
+        response = client.get("/tickets")
+
+    items = response.json()["tickets"]
+    assert len(items) == 2
+    for item in items:
+        assert "worktree" in item, f"worktree key missing in {item}"
+
+
+def test_tickets_worktree_matched_via_branch_name() -> None:
+    """A WorktreeRecord with branch 'fix/42-...' is linked to ticket id='42'."""
+    project = _sample_project()
+    wt_record = _sample_worktree_record(
+        branch="fix/42-some-description",
+        path="C:/worktrees/workboard-fix-42",
+        status="idle",
+    )
+
+    with patch("src.api.tickets.load_all_projects",
+               return_value=_make_result([project])), \
+         patch("src.api.tickets.fetch_open_board",
+               return_value=[_make_batch_result(project, tickets=[_sample_ticket("42")], prs=[])]), \
+         patch("src.api.tickets._build_worktree_map", return_value={42: wt_record}):
+        response = client.get("/tickets")
+
+    items = response.json()["tickets"]
+    assert len(items) == 1
+    wt_field = items[0]["worktree"]
+    assert wt_field is not None
+    assert wt_field["path"] == "C:/worktrees/workboard-fix-42"
+    assert wt_field["branch"] == "fix/42-some-description"
+    assert wt_field["status"] == "idle"
+
+
+def test_tickets_worktree_null_when_no_local_path() -> None:
+    """When local_path is None, _build_worktree_map returns {} and all rows have worktree=null."""
+    from src.api.tickets import _build_worktree_map
+    result = _build_worktree_map(None)
+    assert result == {}
+
+
+def test_tickets_worktree_null_when_store_absent() -> None:
+    """When YamlStateStore().list() raises FileNotFoundError, all rows get worktree=null.
+
+    This test exercises the real _build_worktree_map code path (not patched
+    away) so that removing the ``except Exception`` handler inside
+    _build_worktree_map would make this test FAIL.  It sets
+    _WORKTREE_LIB_AVAILABLE=True and patches YamlStateStore so that
+    list() raises FileNotFoundError, then asserts:
+    - the endpoint returns HTTP 200 (no crash)
+    - every ticket row has worktree=null (graceful degradation)
+    """
+    import src.api.tickets as tickets_module
+
+    original_available = tickets_module._WORKTREE_LIB_AVAILABLE
+
+    # Give the project a local_path so _build_worktree_map is not short-circuited
+    # by the early-return guard (`if not local_path: return {}`).
+    project_with_path = _sample_project()
+    project_with_path.__dict__["local_path"] = "E:/development/workboard"
+
+    mock_store = MagicMock()
+    mock_store.list.side_effect = FileNotFoundError("~/.agent-worktree/state.yaml not found")
+
+    try:
+        tickets_module._WORKTREE_LIB_AVAILABLE = True
+        with patch("src.api.tickets.load_all_projects",
+                   return_value=_make_result([project_with_path])), \
+             patch("src.api.tickets.fetch_open_board",
+                   return_value=[_make_batch_result(project_with_path,
+                                                    tickets=[_sample_ticket("42")],
+                                                    prs=[])]), \
+             patch("src.api.tickets.YamlStateStore", return_value=mock_store):
+            response = client.get("/tickets")
+    finally:
+        tickets_module._WORKTREE_LIB_AVAILABLE = original_available
+
+    assert response.status_code == 200
+    items = response.json()["tickets"]
+    assert len(items) == 1
+    assert items[0]["worktree"] is None
+
+
+def test_tickets_worktree_null_when_no_branch_match() -> None:
+    """A worktree with branch 'chore/99-foo' does not match ticket id='42'."""
+    project = _sample_project()
+    # wt_map has no entry for ticket 42 — the branch belongs to a different ticket.
+    wt_map = {}  # ticket 42 has no matching worktree
+
+    with patch("src.api.tickets.load_all_projects",
+               return_value=_make_result([project])), \
+         patch("src.api.tickets.fetch_open_board",
+               return_value=[_make_batch_result(project, tickets=[_sample_ticket("42")], prs=[])]), \
+         patch("src.api.tickets._build_worktree_map", return_value=wt_map):
+        response = client.get("/tickets")
+
+    items = response.json()["tickets"]
+    assert len(items) == 1
+    assert items[0]["worktree"] is None
+
+
+def test_tickets_pr_and_worktree_simultaneously() -> None:
+    """A ticket can carry both pull_request and worktree non-null at once."""
+    project = _sample_project()
+    pr = _sample_pr(number=7, ticket_number=42)
+    wt_record = _sample_worktree_record(
+        branch="fix/42-my-feature",
+        path="C:/worktrees/workboard-fix-42",
+        status="running",
+    )
+
+    with patch("src.api.tickets.load_all_projects",
+               return_value=_make_result([project])), \
+         patch("src.api.tickets.fetch_open_board",
+               return_value=[_make_batch_result(project, tickets=[_sample_ticket("42")], prs=[pr])]), \
+         patch("src.api.tickets._build_worktree_map", return_value={42: wt_record}):
+        response = client.get("/tickets")
+
+    items = response.json()["tickets"]
+    assert len(items) == 1
+    item = items[0]
+    # Both fields are non-null simultaneously.
+    assert item["pull_request"] is not None
+    assert item["pull_request"]["number"] == 7
+    assert item["worktree"] is not None
+    assert item["worktree"]["branch"] == "fix/42-my-feature"
+    assert item["worktree"]["status"] == "running"
+
+
+def test_build_worktree_map_filters_by_repo_root() -> None:
+    """_build_worktree_map only includes records whose repo_root matches local_path.
+
+    Regression: a worktree from a different repo must not bleed into this
+    project's map.
+    """
+    import src.api.tickets as tickets_module
+
+    # Temporarily enable the lib if it was unavailable (e.g. not installed).
+    original_available = tickets_module._WORKTREE_LIB_AVAILABLE
+
+    matching_rec = _sample_worktree_record(
+        repo_root="E:/development/workboard",
+        branch="fix/42-match",
+        path="C:/wt/match",
+    )
+    other_rec = _sample_worktree_record(
+        repo_root="E:/development/other-repo",
+        branch="fix/42-other",
+        path="C:/wt/other",
+    )
+
+    mock_store = MagicMock()
+    mock_store.list.return_value = [matching_rec, other_rec]
+
+    try:
+        tickets_module._WORKTREE_LIB_AVAILABLE = True
+        with patch("src.api.tickets.YamlStateStore", return_value=mock_store):
+            result = tickets_module._build_worktree_map("E:/development/workboard")
+    finally:
+        tickets_module._WORKTREE_LIB_AVAILABLE = original_available
+
+    assert 42 in result
+    assert result[42].path == "C:/wt/match"
+    # The other repo's record must not appear.
+    assert len(result) == 1
+
+
+def test_build_worktree_map_degrades_on_store_exception() -> None:
+    """_build_worktree_map returns {} when YamlStateStore().list() raises."""
+    import src.api.tickets as tickets_module
+
+    original_available = tickets_module._WORKTREE_LIB_AVAILABLE
+
+    mock_store = MagicMock()
+    mock_store.list.side_effect = FileNotFoundError("state.yaml not found")
+
+    try:
+        tickets_module._WORKTREE_LIB_AVAILABLE = True
+        with patch("src.api.tickets.YamlStateStore", return_value=mock_store):
+            result = tickets_module._build_worktree_map("E:/development/workboard")
+    finally:
+        tickets_module._WORKTREE_LIB_AVAILABLE = original_available
+
+    assert result == {}

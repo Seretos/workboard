@@ -12,6 +12,8 @@
   --color-border-top:  rgba(255, 255, 255, 0.06);
   --color-accent:      #9ca3af;
   --color-pr:          #7c3aed;
+  --color-worktree:    #10b981;
+  --color-worktree-bg: rgba(16, 185, 129, 0.12);
   --color-text:        #e4e4e7;
   --color-text-muted:  #71717a;
   --color-badge-bg:    rgba(156, 163, 175, 0.15);
@@ -145,6 +147,19 @@ body {
 /* Ticket with a linked PR: purple left-accent strip */
 .ticket-card--has-pr {
   border-left-color: var(--color-pr);
+}
+
+/* Worktree badge — shown inline in .card-head when a local worktree exists */
+.card-worktree-badge {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--color-worktree);
+  background: var(--color-worktree-bg);
+  border-radius: 4px;
+  padding: 1px 5px;
+  text-transform: lowercase;
+  letter-spacing: 0.03em;
 }
 
 /* ---- Card internals ---- */
