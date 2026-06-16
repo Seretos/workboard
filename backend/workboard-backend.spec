@@ -16,7 +16,7 @@ block_cipher = None
 _collected_datas = []
 _collected_binaries = []
 _collected_hiddenimports = []
-for _pkg in ("lib_python_projects", "lib_python_config", "ruamel.yaml"):
+for _pkg in ("lib_python_projects", "lib_python_config", "ruamel.yaml", "lib_python_worktree"):
     _d, _b, _h = collect_all(_pkg)
     _collected_datas += _d
     _collected_binaries += _b

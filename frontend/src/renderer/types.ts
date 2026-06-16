@@ -16,6 +16,11 @@ export interface TicketRow {
     status: string;
     draft: boolean;
   } | null;
+  worktree: {
+    path: string;
+    branch: string;
+    status: string;
+  } | null;
 }
 
 export interface PollErrors {

@@ -24,6 +24,11 @@ export function TicketCard({ ticket, presenter }: Props): React.ReactElement {
       <div className="card-head">
         <span className="card-provider">{ticket.provider ?? ""}</span>
         <span className="card-id">{ticket.id ? `#${ticket.id}` : ""}</span>
+        {ticket.worktree != null && (
+          <span className="card-worktree-badge" title={ticket.worktree.branch}>
+            worktree
+          </span>
+        )}
       </div>
       <div className="card-title">{ticket.title ?? ""}</div>
       <div className="card-meta">{metaParts.join(" · ")}</div>
