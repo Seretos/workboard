@@ -1,8 +1,8 @@
 import type { TicketsClient } from "./TicketsClient";
 
 export class BrowserTicketsClient implements TicketsClient {
-  async fetchJson(path: string): Promise<{ ok: boolean; status: number; data: unknown }> {
-    const res = await fetch(`/api${path}`);
+  async fetchJson(path: string, init?: RequestInit): Promise<{ ok: boolean; status: number; data: unknown }> {
+    const res = await fetch(`/api${path}`, init);
     let data: unknown = null;
     try {
       data = await res.json();

@@ -17,6 +17,7 @@ export interface TicketRow {
     draft: boolean;
   } | null;
   worktree: {
+    id: string;
     path: string;
     branch: string;
     status: string;

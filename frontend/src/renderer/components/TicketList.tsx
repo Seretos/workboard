@@ -1,14 +1,17 @@
 import React from "react";
 import type { TicketRow } from "../types";
 import type { DetailPresenter } from "../detail/DetailPresenter";
+import type { TicketsClient } from "../client/TicketsClient";
 import { TicketCard } from "./TicketCard";
 
 interface Props {
   tickets: TicketRow[];
   presenter: DetailPresenter;
+  client: TicketsClient;
+  onRefresh: () => void;
 }
 
-export function TicketList({ tickets, presenter }: Props): React.ReactElement {
+export function TicketList({ tickets, presenter, client, onRefresh }: Props): React.ReactElement {
   // Group tickets by project_id, preserving insertion order.
   const groups = new Map<string, TicketRow[]>();
   for (const ticket of tickets) {
@@ -36,6 +39,8 @@ export function TicketList({ tickets, presenter }: Props): React.ReactElement {
           key={ticket.id}
           ticket={ticket}
           presenter={presenter}
+          client={client}
+          onRefresh={onRefresh}
         />
       );
     }

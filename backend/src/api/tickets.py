@@ -172,6 +172,7 @@ def _enrich_rows(
         matched_wt = wt_map.get(ticket_num) if ticket_num is not None else None
         if matched_wt is not None:
             row["worktree"] = {
+                "id": matched_wt.id,
                 "path": matched_wt.path,
                 "branch": matched_wt.branch,
                 "status": matched_wt.status,
