@@ -8,6 +8,7 @@ export interface PollingState {
   tickets: TicketRow[];
   status: string;
   ticketCount: string;
+  refresh: () => void;
 }
 
 export function useTicketPolling(
@@ -141,5 +142,9 @@ export function useTicketPolling(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  return { tickets, status, ticketCount };
+  const refresh = () => {
+    loadTicketsRef.current();
+  };
+
+  return { tickets, status, ticketCount, refresh };
 }

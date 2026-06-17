@@ -8,6 +8,7 @@ import { TicketCard } from "./components/TicketCard";
 import type { TicketRow } from "./types";
 import type { DetailPresenter } from "./detail/DetailPresenter";
 import type { DetailTicket } from "./types";
+import type { TicketsClient } from "./client/TicketsClient";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -36,12 +37,20 @@ function makeTicket(overrides: {
     project_id: overrides.project_id,
     project_path: overrides.project_path,
     pull_request: overrides.pull_request !== undefined ? overrides.pull_request : null,
+    worktree: null,
   };
 }
 
 function makePresenter(): { presenter: DetailPresenter; open: ReturnType<typeof vi.fn> } {
   const open = vi.fn() as (ticket: DetailTicket) => void;
   return { presenter: { open }, open };
+}
+
+function makeClient(): TicketsClient {
+  return {
+    fetchJson: vi.fn().mockResolvedValue({ ok: true, status: 200, data: null }),
+    onBackendCrashed: vi.fn(),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -58,7 +67,7 @@ describe("TicketList — grouping", () => {
       makeTicket({ id: "5", project_id: "proj-b", project_path: "/repos/beta" }),
     ];
     const { presenter } = makePresenter();
-    const { container } = render(<TicketList tickets={tickets} presenter={presenter} />);
+    const { container } = render(<TicketList tickets={tickets} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} />);
 
     const headers = container.querySelectorAll(".project-group-header");
     expect(headers).toHaveLength(2);
@@ -70,7 +79,7 @@ describe("TicketList — grouping", () => {
       makeTicket({ id: "2", project_id: "proj-b", project_path: "/repos/beta" }),
     ];
     const { presenter } = makePresenter();
-    const { container } = render(<TicketList tickets={tickets} presenter={presenter} />);
+    const { container } = render(<TicketList tickets={tickets} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} />);
 
     const headers = container.querySelectorAll(".project-group-header");
     expect(headers[0].textContent).toContain("/repos/alpha");
@@ -86,7 +95,7 @@ describe("TicketList — grouping", () => {
       makeTicket({ id: "5", project_id: "proj-b", project_path: "/repos/beta" }),
     ];
     const { presenter } = makePresenter();
-    const { container } = render(<TicketList tickets={tickets} presenter={presenter} />);
+    const { container } = render(<TicketList tickets={tickets} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} />);
 
     const badges = container.querySelectorAll(".project-group-header .group-count");
     expect(badges[0].textContent).toBe("2");
@@ -99,7 +108,7 @@ describe("TicketList — grouping", () => {
       makeTicket({ id: "2", project_id: "proj-a", project_path: "/repos/alpha" }),
     ];
     const { presenter } = makePresenter();
-    const { container } = render(<TicketList tickets={tickets} presenter={presenter} />);
+    const { container } = render(<TicketList tickets={tickets} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} />);
 
     const headers = container.querySelectorAll(".project-group-header");
     expect(headers).toHaveLength(1);
@@ -114,7 +123,7 @@ describe("TicketList — grouping", () => {
       makeTicket({ id: "5", project_id: "proj-b", project_path: "/repos/beta" }),
     ];
     const { presenter } = makePresenter();
-    const { container } = render(<TicketList tickets={tickets} presenter={presenter} />);
+    const { container } = render(<TicketList tickets={tickets} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} />);
 
     const list = container.querySelector("ul")!;
     const items = Array.from(list.children);
@@ -131,7 +140,7 @@ describe("TicketList — grouping", () => {
 
   it("empty ticket list: renders nothing (no headers, no cards)", () => {
     const { presenter } = makePresenter();
-    const { container } = render(<TicketList tickets={[]} presenter={presenter} />);
+    const { container } = render(<TicketList tickets={[]} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} />);
 
     const list = container.querySelector("ul")!;
     expect(list.children).toHaveLength(0);
@@ -153,7 +162,7 @@ describe("TicketList — PR accent", () => {
       }),
     ];
     const { presenter } = makePresenter();
-    const { container } = render(<TicketList tickets={tickets} presenter={presenter} />);
+    const { container } = render(<TicketList tickets={tickets} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} />);
 
     const card = container.querySelector(".ticket-card");
     expect(card).not.toBeNull();
@@ -165,7 +174,7 @@ describe("TicketList — PR accent", () => {
       makeTicket({ id: "1", project_id: "proj-a", project_path: "/repos/alpha", pull_request: null }),
     ];
     const { presenter } = makePresenter();
-    const { container } = render(<TicketList tickets={tickets} presenter={presenter} />);
+    const { container } = render(<TicketList tickets={tickets} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} />);
 
     const card = container.querySelector(".ticket-card");
     expect(card).not.toBeNull();
@@ -185,7 +194,7 @@ describe("TicketList — PR accent", () => {
       // pull_request intentionally absent
     } as TicketRow;
     const { presenter } = makePresenter();
-    const { container } = render(<TicketList tickets={[ticket]} presenter={presenter} />);
+    const { container } = render(<TicketList tickets={[ticket]} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} />);
 
     const card = container.querySelector(".ticket-card");
     expect(card).not.toBeNull();
@@ -208,7 +217,7 @@ describe("TicketList — PR accent", () => {
       }),
     ];
     const { presenter } = makePresenter();
-    const { container } = render(<TicketList tickets={tickets} presenter={presenter} />);
+    const { container } = render(<TicketList tickets={tickets} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} />);
 
     const cards = container.querySelectorAll(".ticket-card");
     expect(cards).toHaveLength(2);
@@ -229,7 +238,7 @@ describe("TicketList — edge cases", () => {
     ];
     const { presenter } = makePresenter();
     expect(() => {
-      const { container } = render(<TicketList tickets={tickets} presenter={presenter} />);
+      const { container } = render(<TicketList tickets={tickets} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} />);
       const headers = container.querySelectorAll(".project-group-header");
       expect(headers).toHaveLength(1);
       expect(headers[0].textContent).toContain("/repos/first");
@@ -242,7 +251,7 @@ describe("TicketList — edge cases", () => {
     ];
     const { presenter } = makePresenter();
     expect(() => {
-      const { container } = render(<TicketList tickets={tickets} presenter={presenter} />);
+      const { container } = render(<TicketList tickets={tickets} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} />);
       const headers = container.querySelectorAll(".project-group-header");
       expect(headers).toHaveLength(1);
     }).not.toThrow();
@@ -258,7 +267,7 @@ describe("TicketList — edge cases", () => {
       }),
     ];
     const { presenter } = makePresenter();
-    const { container } = render(<TicketList tickets={tickets} presenter={presenter} />);
+    const { container } = render(<TicketList tickets={tickets} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} />);
 
     const card = container.querySelector(".ticket-card");
     expect(card!.classList.contains("ticket-card--has-pr")).toBe(true);
@@ -274,7 +283,7 @@ describe("TicketCard — card click", () => {
     const ticket = makeTicket({ id: "42", project_id: "proj-a", project_path: "/repos/alpha" });
     const { presenter, open } = makePresenter();
 
-    const { container } = render(<TicketCard ticket={ticket} presenter={presenter} />);
+    const { container } = render(<TicketCard ticket={ticket} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} />);
     const card = container.querySelector(".ticket-card") as HTMLElement;
     expect(card).not.toBeNull();
 
@@ -293,7 +302,7 @@ describe("TicketCard — card click", () => {
     });
     const { presenter, open } = makePresenter();
 
-    const { container } = render(<TicketCard ticket={ticket} presenter={presenter} />);
+    const { container } = render(<TicketCard ticket={ticket} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} />);
     const card = container.querySelector(".ticket-card") as HTMLElement;
     await userEvent.click(card);
 
@@ -306,7 +315,7 @@ describe("TicketCard — card click", () => {
     const ticket = makeTicket({ id: "10", project_id: "proj-a", project_path: "/repos/alpha", pull_request: pr });
     const { presenter, open } = makePresenter();
 
-    const { container } = render(<TicketCard ticket={ticket} presenter={presenter} />);
+    const { container } = render(<TicketCard ticket={ticket} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} />);
     const card = container.querySelector(".ticket-card") as HTMLElement;
     await userEvent.click(card);
 
@@ -319,7 +328,7 @@ describe("TicketCard — card click", () => {
     const t2 = makeTicket({ id: "2", project_id: "proj-a", project_path: "/repos/alpha" });
     const { presenter, open } = makePresenter();
 
-    const { container } = render(<TicketList tickets={[t1, t2]} presenter={presenter} />);
+    const { container } = render(<TicketList tickets={[t1, t2]} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} />);
     const cards = container.querySelectorAll(".ticket-card") as NodeListOf<HTMLElement>;
     expect(cards).toHaveLength(2);
 
@@ -328,5 +337,153 @@ describe("TicketCard — card click", () => {
 
     await userEvent.click(cards[1]);
     expect((open as ReturnType<typeof vi.fn>)).toHaveBeenLastCalledWith(t2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TicketCard — worktree create / delete behaviour
+// ---------------------------------------------------------------------------
+
+function makeTicketWithWorktree(worktreeId: string = "workboard-fix-42-abcd1234"): TicketRow {
+  return {
+    ...makeTicket({ id: "42", project_id: "proj-a", project_path: "/repos/alpha" }),
+    worktree: { id: worktreeId, path: "/wt/path", branch: "fix/42-test", status: "idle" },
+  };
+}
+
+describe("TicketCard — create worktree", () => {
+  it("clicking 'Worktree erstellen' calls fetchJson with method POST and correct body", async () => {
+    const ticket = makeTicket({ id: "42", project_id: "proj-a", project_path: "/repos/alpha" });
+    const { presenter } = makePresenter();
+    const fetchJson = vi.fn().mockResolvedValue({ ok: true, status: 201, data: { id: "new-id" } });
+    const client: TicketsClient = { fetchJson, onBackendCrashed: vi.fn() };
+    const onRefresh = vi.fn();
+
+    const { container } = render(
+      <TicketCard ticket={ticket} presenter={presenter} client={client} onRefresh={onRefresh} />
+    );
+
+    const btn = container.querySelector(".card-worktree-btn") as HTMLElement;
+    expect(btn).not.toBeNull();
+    await userEvent.click(btn);
+
+    expect(fetchJson).toHaveBeenCalledWith(
+      "/worktrees",
+      expect.objectContaining({
+        method: "POST",
+        body: expect.stringContaining('"project_id":"proj-a"'),
+      })
+    );
+    const callInit = fetchJson.mock.calls[0][1] as RequestInit;
+    const body = JSON.parse(callInit.body as string);
+    expect(body.project_id).toBe("proj-a");
+    expect(body.ticket_number).toBe(42);
+    expect(body.ticket_title).toBe("Test ticket");
+    expect(body.base_branch).toBe("main");
+  });
+
+  it("on create success onRefresh is called", async () => {
+    const ticket = makeTicket({ id: "42", project_id: "proj-a", project_path: "/repos/alpha" });
+    const { presenter } = makePresenter();
+    const fetchJson = vi.fn().mockResolvedValue({ ok: true, status: 201, data: {} });
+    const client: TicketsClient = { fetchJson, onBackendCrashed: vi.fn() };
+    const onRefresh = vi.fn();
+
+    const { container } = render(
+      <TicketCard ticket={ticket} presenter={presenter} client={client} onRefresh={onRefresh} />
+    );
+
+    const btn = container.querySelector(".card-worktree-btn") as HTMLElement;
+    await userEvent.click(btn);
+
+    expect(onRefresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("non-ok create response renders error text", async () => {
+    const ticket = makeTicket({ id: "42", project_id: "proj-a", project_path: "/repos/alpha" });
+    const { presenter } = makePresenter();
+    const fetchJson = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 409,
+      data: { detail: "Duplicate worktree" },
+    });
+    const client: TicketsClient = { fetchJson, onBackendCrashed: vi.fn() };
+    const onRefresh = vi.fn();
+
+    const { container } = render(
+      <TicketCard ticket={ticket} presenter={presenter} client={client} onRefresh={onRefresh} />
+    );
+
+    const btn = container.querySelector(".card-worktree-btn") as HTMLElement;
+    await userEvent.click(btn);
+
+    const errorEl = container.querySelector(".card-worktree-error");
+    expect(errorEl).not.toBeNull();
+    expect(errorEl!.textContent).toContain("Duplicate worktree");
+    expect(onRefresh).not.toHaveBeenCalled();
+  });
+});
+
+describe("TicketCard — delete worktree", () => {
+  it("clicking 'Worktree löschen' calls fetchJson with method DELETE", async () => {
+    const ticket = makeTicketWithWorktree("workboard-fix-42-abcd1234");
+    const { presenter } = makePresenter();
+    const fetchJson = vi.fn().mockResolvedValue({ ok: true, status: 200, data: { id: "workboard-fix-42-abcd1234", status: "removed" } });
+    const client: TicketsClient = { fetchJson, onBackendCrashed: vi.fn() };
+    const onRefresh = vi.fn();
+
+    const { container } = render(
+      <TicketCard ticket={ticket} presenter={presenter} client={client} onRefresh={onRefresh} />
+    );
+
+    const btn = container.querySelector(".card-worktree-btn--delete") as HTMLElement;
+    expect(btn).not.toBeNull();
+    await userEvent.click(btn);
+
+    expect(fetchJson).toHaveBeenCalledWith(
+      expect.stringContaining("/worktrees/workboard-fix-42-abcd1234"),
+      expect.objectContaining({ method: "DELETE" })
+    );
+  });
+
+  it("on delete success onRefresh is called", async () => {
+    const ticket = makeTicketWithWorktree();
+    const { presenter } = makePresenter();
+    const fetchJson = vi.fn().mockResolvedValue({ ok: true, status: 200, data: {} });
+    const client: TicketsClient = { fetchJson, onBackendCrashed: vi.fn() };
+    const onRefresh = vi.fn();
+
+    const { container } = render(
+      <TicketCard ticket={ticket} presenter={presenter} client={client} onRefresh={onRefresh} />
+    );
+
+    const btn = container.querySelector(".card-worktree-btn--delete") as HTMLElement;
+    await userEvent.click(btn);
+
+    expect(onRefresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("non-ok delete response renders error text and onRefresh is NOT called", async () => {
+    const ticket = makeTicketWithWorktree();
+    const { presenter } = makePresenter();
+    const fetchJson = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 409,
+      data: { detail: "Worktree directory is locked" },
+    });
+    const client: TicketsClient = { fetchJson, onBackendCrashed: vi.fn() };
+    const onRefresh = vi.fn();
+
+    const { container } = render(
+      <TicketCard ticket={ticket} presenter={presenter} client={client} onRefresh={onRefresh} />
+    );
+
+    const btn = container.querySelector(".card-worktree-btn--delete") as HTMLElement;
+    await userEvent.click(btn);
+
+    const errorEl = container.querySelector(".card-worktree-error");
+    expect(errorEl).not.toBeNull();
+    expect(errorEl!.textContent).toContain("Worktree directory is locked");
+    expect(onRefresh).not.toHaveBeenCalled();
   });
 });

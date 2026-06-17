@@ -910,6 +910,7 @@ def _sample_worktree_record(
 ) -> MagicMock:
     """Return a mock WorktreeRecord with the given fields."""
     rec = MagicMock()
+    rec.id = "workboard-fix-42-abcd1234"
     rec.repo_root = repo_root
     rec.branch = branch
     rec.path = path
@@ -971,6 +972,7 @@ def test_tickets_worktree_matched_via_branch_name() -> None:
     assert len(items) == 1
     wt_field = items[0]["worktree"]
     assert wt_field is not None
+    assert wt_field["id"] == "workboard-fix-42-abcd1234"
     assert wt_field["path"] == "C:/worktrees/workboard-fix-42"
     assert wt_field["branch"] == "fix/42-some-description"
     assert wt_field["status"] == "idle"
