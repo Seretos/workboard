@@ -45,6 +45,15 @@ body {
   flex-direction: column;
 }
 
+/* Stretch the React mount point to fill the body flex column */
+#root {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
 /* ---- Panel header ---- */
 .panel-header {
   display: flex;
