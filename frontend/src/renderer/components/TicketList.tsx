@@ -9,9 +9,10 @@ interface Props {
   presenter: DetailPresenter;
   client: TicketsClient;
   onRefresh: () => void;
+  activeTicketId: string | null;
 }
 
-export function TicketList({ tickets, presenter, client, onRefresh }: Props): React.ReactElement {
+export function TicketList({ tickets, presenter, client, onRefresh, activeTicketId }: Props): React.ReactElement {
   // Group tickets by project_id, preserving insertion order.
   const groups = new Map<string, TicketRow[]>();
   for (const ticket of tickets) {
@@ -41,6 +42,7 @@ export function TicketList({ tickets, presenter, client, onRefresh }: Props): Re
           presenter={presenter}
           client={client}
           onRefresh={onRefresh}
+          isActive={ticket.id === activeTicketId}
         />
       );
     }

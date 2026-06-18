@@ -45,4 +45,7 @@ export interface DetailTicket {
     url: string;
     status: string;
   } | null;
+  labels?: string[];
+  project_id?: string;
+  project_path?: string;
 }

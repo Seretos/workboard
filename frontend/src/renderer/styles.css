@@ -158,6 +158,44 @@ body {
   border-left-color: var(--color-pr);
 }
 
+/* Ticket with a local worktree: green left-accent strip + subtle tint */
+.ticket-card--has-worktree {
+  border-left-color: var(--color-worktree);
+  background: var(--color-worktree-bg);
+}
+
+/* Currently-open detail view card: green outline */
+.ticket-card--active {
+  outline: 2px solid var(--color-worktree);
+  outline-offset: -1px;
+}
+
+/* Label chips row below .card-meta */
+.card-labels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.card-label-chip {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-badge-text);
+  background: var(--color-badge-bg);
+  border-radius: 4px;
+  padding: 1px 5px;
+  text-transform: lowercase;
+  letter-spacing: 0.03em;
+}
+
+/* Project name shown next to ticket number in detail header */
+.detail-project-name {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-text-muted);
+}
+
 /* Worktree badge — shown inline in .card-head when a local worktree exists */
 .card-worktree-badge {
   font-family: var(--font-mono);
