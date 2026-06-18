@@ -8,18 +8,20 @@ interface Props {
   presenter: DetailPresenter;
   client: TicketsClient;
   onRefresh: () => void;
+  isActive: boolean;
 }
 
-export function TicketCard({ ticket, presenter, client, onRefresh }: Props): React.ReactElement {
+export function TicketCard({ ticket, presenter, client, onRefresh, isActive }: Props): React.ReactElement {
   const [isCreating, setIsCreating] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [worktreeError, setWorktreeError] = useState<string | null>(null);
   const [forceDelete, setForceDelete] = useState(false);
 
-  const className =
-    ticket.pull_request != null
-      ? "ticket-card ticket-card--has-pr"
-      : "ticket-card";
+  const classes = ["ticket-card"];
+  if (ticket.pull_request != null) classes.push("ticket-card--has-pr");
+  if (ticket.worktree != null)     classes.push("ticket-card--has-worktree");
+  if (isActive)                    classes.push("ticket-card--active");
+  const className = classes.join(" ");
 
   const handleClick = () => {
     presenter.open(ticket);
@@ -94,6 +96,13 @@ export function TicketCard({ ticket, presenter, client, onRefresh }: Props): Rea
       </div>
       <div className="card-title">{ticket.title ?? ""}</div>
       <div className="card-meta">{metaParts.join(" · ")}</div>
+      {ticket.labels.length > 0 && (
+        <div className="card-labels">
+          {ticket.labels.map((label) => (
+            <span key={label} className="card-label-chip">{label}</span>
+          ))}
+        </div>
+      )}
       {ticket.worktree == null ? (
         <button
           className="card-worktree-btn"

@@ -25,6 +25,7 @@ function makeTicket(overrides: {
   project_id: string;
   project_path: string;
   pull_request?: { number: number; url: string; status: string; draft: boolean } | null;
+  worktree?: { id: string; path: string; branch: string; status: string } | null;
 }): TicketRow {
   return {
     id: overrides.id ?? "1",
@@ -37,13 +38,13 @@ function makeTicket(overrides: {
     project_id: overrides.project_id,
     project_path: overrides.project_path,
     pull_request: overrides.pull_request !== undefined ? overrides.pull_request : null,
-    worktree: null,
+    worktree: overrides.worktree !== undefined ? overrides.worktree : null,
   };
 }
 
 function makePresenter(): { presenter: DetailPresenter; open: ReturnType<typeof vi.fn> } {
   const open = vi.fn() as (ticket: DetailTicket) => void;
-  return { presenter: { open }, open };
+  return { presenter: { open, getActiveId: vi.fn().mockReturnValue(null) }, open };
 }
 
 function makeClient(): TicketsClient {
@@ -67,7 +68,7 @@ describe("TicketList — grouping", () => {
       makeTicket({ id: "5", project_id: "proj-b", project_path: "/repos/beta" }),
     ];
     const { presenter } = makePresenter();
-    const { container } = render(<TicketList tickets={tickets} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} />);
+    const { container } = render(<TicketList tickets={tickets} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} activeTicketId={null} />);
 
     const headers = container.querySelectorAll(".project-group-header");
     expect(headers).toHaveLength(2);
@@ -79,7 +80,7 @@ describe("TicketList — grouping", () => {
       makeTicket({ id: "2", project_id: "proj-b", project_path: "/repos/beta" }),
     ];
     const { presenter } = makePresenter();
-    const { container } = render(<TicketList tickets={tickets} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} />);
+    const { container } = render(<TicketList tickets={tickets} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} activeTicketId={null} />);
 
     const headers = container.querySelectorAll(".project-group-header");
     expect(headers[0].textContent).toContain("/repos/alpha");
@@ -95,7 +96,7 @@ describe("TicketList — grouping", () => {
       makeTicket({ id: "5", project_id: "proj-b", project_path: "/repos/beta" }),
     ];
     const { presenter } = makePresenter();
-    const { container } = render(<TicketList tickets={tickets} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} />);
+    const { container } = render(<TicketList tickets={tickets} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} activeTicketId={null} />);
 
     const badges = container.querySelectorAll(".project-group-header .group-count");
     expect(badges[0].textContent).toBe("2");
@@ -108,7 +109,7 @@ describe("TicketList — grouping", () => {
       makeTicket({ id: "2", project_id: "proj-a", project_path: "/repos/alpha" }),
     ];
     const { presenter } = makePresenter();
-    const { container } = render(<TicketList tickets={tickets} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} />);
+    const { container } = render(<TicketList tickets={tickets} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} activeTicketId={null} />);
 
     const headers = container.querySelectorAll(".project-group-header");
     expect(headers).toHaveLength(1);
@@ -123,7 +124,7 @@ describe("TicketList — grouping", () => {
       makeTicket({ id: "5", project_id: "proj-b", project_path: "/repos/beta" }),
     ];
     const { presenter } = makePresenter();
-    const { container } = render(<TicketList tickets={tickets} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} />);
+    const { container } = render(<TicketList tickets={tickets} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} activeTicketId={null} />);
 
     const list = container.querySelector("ul")!;
     const items = Array.from(list.children);
@@ -140,7 +141,7 @@ describe("TicketList — grouping", () => {
 
   it("empty ticket list: renders nothing (no headers, no cards)", () => {
     const { presenter } = makePresenter();
-    const { container } = render(<TicketList tickets={[]} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} />);
+    const { container } = render(<TicketList tickets={[]} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} activeTicketId={null} />);
 
     const list = container.querySelector("ul")!;
     expect(list.children).toHaveLength(0);
@@ -162,7 +163,7 @@ describe("TicketList — PR accent", () => {
       }),
     ];
     const { presenter } = makePresenter();
-    const { container } = render(<TicketList tickets={tickets} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} />);
+    const { container } = render(<TicketList tickets={tickets} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} activeTicketId={null} />);
 
     const card = container.querySelector(".ticket-card");
     expect(card).not.toBeNull();
@@ -174,7 +175,7 @@ describe("TicketList — PR accent", () => {
       makeTicket({ id: "1", project_id: "proj-a", project_path: "/repos/alpha", pull_request: null }),
     ];
     const { presenter } = makePresenter();
-    const { container } = render(<TicketList tickets={tickets} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} />);
+    const { container } = render(<TicketList tickets={tickets} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} activeTicketId={null} />);
 
     const card = container.querySelector(".ticket-card");
     expect(card).not.toBeNull();
@@ -194,7 +195,7 @@ describe("TicketList — PR accent", () => {
       // pull_request intentionally absent
     } as TicketRow;
     const { presenter } = makePresenter();
-    const { container } = render(<TicketList tickets={[ticket]} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} />);
+    const { container } = render(<TicketList tickets={[ticket]} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} activeTicketId={null} />);
 
     const card = container.querySelector(".ticket-card");
     expect(card).not.toBeNull();
@@ -217,7 +218,7 @@ describe("TicketList — PR accent", () => {
       }),
     ];
     const { presenter } = makePresenter();
-    const { container } = render(<TicketList tickets={tickets} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} />);
+    const { container } = render(<TicketList tickets={tickets} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} activeTicketId={null} />);
 
     const cards = container.querySelectorAll(".ticket-card");
     expect(cards).toHaveLength(2);
@@ -238,7 +239,7 @@ describe("TicketList — edge cases", () => {
     ];
     const { presenter } = makePresenter();
     expect(() => {
-      const { container } = render(<TicketList tickets={tickets} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} />);
+      const { container } = render(<TicketList tickets={tickets} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} activeTicketId={null} />);
       const headers = container.querySelectorAll(".project-group-header");
       expect(headers).toHaveLength(1);
       expect(headers[0].textContent).toContain("/repos/first");
@@ -251,7 +252,7 @@ describe("TicketList — edge cases", () => {
     ];
     const { presenter } = makePresenter();
     expect(() => {
-      const { container } = render(<TicketList tickets={tickets} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} />);
+      const { container } = render(<TicketList tickets={tickets} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} activeTicketId={null} />);
       const headers = container.querySelectorAll(".project-group-header");
       expect(headers).toHaveLength(1);
     }).not.toThrow();
@@ -267,7 +268,7 @@ describe("TicketList — edge cases", () => {
       }),
     ];
     const { presenter } = makePresenter();
-    const { container } = render(<TicketList tickets={tickets} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} />);
+    const { container } = render(<TicketList tickets={tickets} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} activeTicketId={null} />);
 
     const card = container.querySelector(".ticket-card");
     expect(card!.classList.contains("ticket-card--has-pr")).toBe(true);
@@ -283,7 +284,7 @@ describe("TicketCard — card click", () => {
     const ticket = makeTicket({ id: "42", project_id: "proj-a", project_path: "/repos/alpha" });
     const { presenter, open } = makePresenter();
 
-    const { container } = render(<TicketCard ticket={ticket} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} />);
+    const { container } = render(<TicketCard ticket={ticket} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} isActive={false} />);
     const card = container.querySelector(".ticket-card") as HTMLElement;
     expect(card).not.toBeNull();
 
@@ -302,7 +303,7 @@ describe("TicketCard — card click", () => {
     });
     const { presenter, open } = makePresenter();
 
-    const { container } = render(<TicketCard ticket={ticket} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} />);
+    const { container } = render(<TicketCard ticket={ticket} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} isActive={false} />);
     const card = container.querySelector(".ticket-card") as HTMLElement;
     await userEvent.click(card);
 
@@ -315,7 +316,7 @@ describe("TicketCard — card click", () => {
     const ticket = makeTicket({ id: "10", project_id: "proj-a", project_path: "/repos/alpha", pull_request: pr });
     const { presenter, open } = makePresenter();
 
-    const { container } = render(<TicketCard ticket={ticket} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} />);
+    const { container } = render(<TicketCard ticket={ticket} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} isActive={false} />);
     const card = container.querySelector(".ticket-card") as HTMLElement;
     await userEvent.click(card);
 
@@ -328,7 +329,7 @@ describe("TicketCard — card click", () => {
     const t2 = makeTicket({ id: "2", project_id: "proj-a", project_path: "/repos/alpha" });
     const { presenter, open } = makePresenter();
 
-    const { container } = render(<TicketList tickets={[t1, t2]} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} />);
+    const { container } = render(<TicketList tickets={[t1, t2]} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} activeTicketId={null} />);
     const cards = container.querySelectorAll(".ticket-card") as NodeListOf<HTMLElement>;
     expect(cards).toHaveLength(2);
 
@@ -360,7 +361,7 @@ describe("TicketCard — create worktree", () => {
     const onRefresh = vi.fn();
 
     const { container } = render(
-      <TicketCard ticket={ticket} presenter={presenter} client={client} onRefresh={onRefresh} />
+      <TicketCard ticket={ticket} presenter={presenter} client={client} onRefresh={onRefresh} isActive={false} />
     );
 
     const btn = container.querySelector(".card-worktree-btn") as HTMLElement;
@@ -390,7 +391,7 @@ describe("TicketCard — create worktree", () => {
     const onRefresh = vi.fn();
 
     const { container } = render(
-      <TicketCard ticket={ticket} presenter={presenter} client={client} onRefresh={onRefresh} />
+      <TicketCard ticket={ticket} presenter={presenter} client={client} onRefresh={onRefresh} isActive={false} />
     );
 
     const btn = container.querySelector(".card-worktree-btn") as HTMLElement;
@@ -411,7 +412,7 @@ describe("TicketCard — create worktree", () => {
     const onRefresh = vi.fn();
 
     const { container } = render(
-      <TicketCard ticket={ticket} presenter={presenter} client={client} onRefresh={onRefresh} />
+      <TicketCard ticket={ticket} presenter={presenter} client={client} onRefresh={onRefresh} isActive={false} />
     );
 
     const btn = container.querySelector(".card-worktree-btn") as HTMLElement;
@@ -433,7 +434,7 @@ describe("TicketCard — delete worktree", () => {
     const onRefresh = vi.fn();
 
     const { container } = render(
-      <TicketCard ticket={ticket} presenter={presenter} client={client} onRefresh={onRefresh} />
+      <TicketCard ticket={ticket} presenter={presenter} client={client} onRefresh={onRefresh} isActive={false} />
     );
 
     const btn = container.querySelector(".card-worktree-btn--delete") as HTMLElement;
@@ -454,7 +455,7 @@ describe("TicketCard — delete worktree", () => {
     const onRefresh = vi.fn();
 
     const { container } = render(
-      <TicketCard ticket={ticket} presenter={presenter} client={client} onRefresh={onRefresh} />
+      <TicketCard ticket={ticket} presenter={presenter} client={client} onRefresh={onRefresh} isActive={false} />
     );
 
     const btn = container.querySelector(".card-worktree-btn--delete") as HTMLElement;
@@ -475,7 +476,7 @@ describe("TicketCard — delete worktree", () => {
     const onRefresh = vi.fn();
 
     const { container } = render(
-      <TicketCard ticket={ticket} presenter={presenter} client={client} onRefresh={onRefresh} />
+      <TicketCard ticket={ticket} presenter={presenter} client={client} onRefresh={onRefresh} isActive={false} />
     );
 
     const btn = container.querySelector(".card-worktree-btn--delete") as HTMLElement;
@@ -485,5 +486,160 @@ describe("TicketCard — delete worktree", () => {
     expect(errorEl).not.toBeNull();
     expect(errorEl!.textContent).toContain("Worktree directory is locked");
     expect(onRefresh).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TicketCard — worktree highlight (ticket #59)
+// ---------------------------------------------------------------------------
+
+describe("TicketCard — worktree highlight", () => {
+  it("ticket with worktree != null gets class ticket-card--has-worktree", () => {
+    const ticket = makeTicketWithWorktree();
+    const { presenter } = makePresenter();
+    const { container } = render(
+      <TicketCard ticket={ticket} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} isActive={false} />
+    );
+    const card = container.querySelector(".ticket-card");
+    expect(card).not.toBeNull();
+    expect(card!.classList.contains("ticket-card--has-worktree")).toBe(true);
+  });
+
+  it("ticket with worktree: null does NOT get class ticket-card--has-worktree", () => {
+    const ticket = makeTicket({ id: "1", project_id: "proj-a", project_path: "/repos/alpha" });
+    const { presenter } = makePresenter();
+    const { container } = render(
+      <TicketCard ticket={ticket} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} isActive={false} />
+    );
+    const card = container.querySelector(".ticket-card");
+    expect(card!.classList.contains("ticket-card--has-worktree")).toBe(false);
+  });
+
+  it("ticket with both PR and worktree carries both modifier classes", () => {
+    const ticket = makeTicket({
+      id: "5",
+      project_id: "proj-a",
+      project_path: "/repos/alpha",
+      pull_request: { number: 5, url: "https://github.com/x/y/pull/5", status: "open", draft: false },
+      worktree: { id: "wt-5", path: "/wt/5", branch: "fix/5-test", status: "idle" },
+    });
+    const { presenter } = makePresenter();
+    const { container } = render(
+      <TicketCard ticket={ticket} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} isActive={false} />
+    );
+    const card = container.querySelector(".ticket-card");
+    expect(card!.classList.contains("ticket-card--has-pr")).toBe(true);
+    expect(card!.classList.contains("ticket-card--has-worktree")).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TicketCard — active border (ticket #59)
+// ---------------------------------------------------------------------------
+
+describe("TicketCard — active border", () => {
+  it("isActive=true adds class ticket-card--active", () => {
+    const ticket = makeTicket({ id: "3", project_id: "proj-a", project_path: "/repos/alpha" });
+    const { presenter } = makePresenter();
+    const { container } = render(
+      <TicketCard ticket={ticket} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} isActive={true} />
+    );
+    const card = container.querySelector(".ticket-card");
+    expect(card!.classList.contains("ticket-card--active")).toBe(true);
+  });
+
+  it("isActive=false does NOT add class ticket-card--active", () => {
+    const ticket = makeTicket({ id: "3", project_id: "proj-a", project_path: "/repos/alpha" });
+    const { presenter } = makePresenter();
+    const { container } = render(
+      <TicketCard ticket={ticket} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} isActive={false} />
+    );
+    const card = container.querySelector(".ticket-card");
+    expect(card!.classList.contains("ticket-card--active")).toBe(false);
+  });
+
+  it("only the card whose id matches activeTicketId gets ticket-card--active", () => {
+    const tickets = [
+      makeTicket({ id: "10", project_id: "proj-a", project_path: "/repos/alpha" }),
+      makeTicket({ id: "20", project_id: "proj-a", project_path: "/repos/alpha" }),
+      makeTicket({ id: "30", project_id: "proj-a", project_path: "/repos/alpha" }),
+    ];
+    const { presenter } = makePresenter();
+    const { container } = render(
+      <TicketList tickets={tickets} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} activeTicketId="20" />
+    );
+    const cards = container.querySelectorAll(".ticket-card");
+    expect(cards[0].classList.contains("ticket-card--active")).toBe(false);
+    expect(cards[1].classList.contains("ticket-card--active")).toBe(true);
+    expect(cards[2].classList.contains("ticket-card--active")).toBe(false);
+  });
+
+  it("activeTicketId=null: no card gets ticket-card--active", () => {
+    const tickets = [
+      makeTicket({ id: "10", project_id: "proj-a", project_path: "/repos/alpha" }),
+      makeTicket({ id: "20", project_id: "proj-a", project_path: "/repos/alpha" }),
+    ];
+    const { presenter } = makePresenter();
+    const { container } = render(
+      <TicketList tickets={tickets} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} activeTicketId={null} />
+    );
+    const cards = container.querySelectorAll(".ticket-card");
+    for (const card of Array.from(cards)) {
+      expect(card.classList.contains("ticket-card--active")).toBe(false);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TicketCard — label chips (ticket #59)
+// ---------------------------------------------------------------------------
+
+describe("TicketCard — label chips", () => {
+  it("renders .card-labels container when ticket has labels", () => {
+    const ticket = makeTicket({
+      id: "1",
+      project_id: "proj-a",
+      project_path: "/repos/alpha",
+      labels: ["bug", "urgent"],
+    });
+    const { presenter } = makePresenter();
+    const { container } = render(
+      <TicketCard ticket={ticket} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} isActive={false} />
+    );
+    const labelsEl = container.querySelector(".card-labels");
+    expect(labelsEl).not.toBeNull();
+  });
+
+  it("renders one .card-label-chip per label with correct text", () => {
+    const ticket = makeTicket({
+      id: "1",
+      project_id: "proj-a",
+      project_path: "/repos/alpha",
+      labels: ["bug", "urgent", "feature"],
+    });
+    const { presenter } = makePresenter();
+    const { container } = render(
+      <TicketCard ticket={ticket} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} isActive={false} />
+    );
+    const chips = container.querySelectorAll(".card-label-chip");
+    expect(chips).toHaveLength(3);
+    expect(chips[0].textContent).toBe("bug");
+    expect(chips[1].textContent).toBe("urgent");
+    expect(chips[2].textContent).toBe("feature");
+  });
+
+  it("does NOT render .card-labels when ticket has no labels (empty array)", () => {
+    const ticket = makeTicket({
+      id: "1",
+      project_id: "proj-a",
+      project_path: "/repos/alpha",
+      labels: [],
+    });
+    const { presenter } = makePresenter();
+    const { container } = render(
+      <TicketCard ticket={ticket} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} isActive={false} />
+    );
+    const labelsEl = container.querySelector(".card-labels");
+    expect(labelsEl).toBeNull();
   });
 });

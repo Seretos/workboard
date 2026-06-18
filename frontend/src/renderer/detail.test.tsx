@@ -443,3 +443,30 @@ describe("DetailView — onClose prop", () => {
     closeSpy.mockRestore();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Fix #59: project name in detail header
+// ---------------------------------------------------------------------------
+
+describe("DetailView — project name in header", () => {
+  beforeEach(() => setupDetailMock());
+
+  it("renders .detail-project-name with correct text when project_path is set", () => {
+    const ticket: DetailTicket = {
+      ...makeDetailTicket(),
+      project_path: "/repos/my-project",
+    };
+    const { container } = render(<DetailView ticket={ticket} />);
+    const el = q(container, ".detail-project-name");
+    expect(el).not.toBeNull();
+    expect(el!.textContent).toBe("/repos/my-project");
+  });
+
+  it("does NOT render .detail-project-name when project_path is absent", () => {
+    const ticket: DetailTicket = makeDetailTicket();
+    // makeDetailTicket does not set project_path, so it is undefined.
+    const { container } = render(<DetailView ticket={ticket} />);
+    const el = q(container, ".detail-project-name");
+    expect(el).toBeNull();
+  });
+});

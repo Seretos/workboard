@@ -101,6 +101,9 @@ export function DetailView({ ticket, onClose, openExternal }: Props): React.Reac
       <header className="detail-header">
         <div className="detail-head-top">
           <span id="detail-id" className="detail-id">{t.id ?? ""}</span>
+          {t.project_path && (
+            <span className="detail-project-name">{t.project_path}</span>
+          )}
         </div>
         <h1 id="detail-title" className="detail-title">{t.title ?? ""}</h1>
         <div className="detail-sub-row">

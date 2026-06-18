@@ -7,9 +7,10 @@ import { TicketBoard } from "./TicketBoard";
 interface Props {
   client: TicketsClient;
   presenter: DetailPresenter;
+  activeTicketId: string | null;
 }
 
-export function App({ client, presenter }: Props): React.ReactElement {
+export function App({ client, presenter, activeTicketId }: Props): React.ReactElement {
   const { tickets, status, ticketCount, refresh } = useTicketPolling(client);
 
   return (
@@ -20,6 +21,7 @@ export function App({ client, presenter }: Props): React.ReactElement {
       presenter={presenter}
       client={client}
       onRefresh={refresh}
+      activeTicketId={activeTicketId}
     />
   );
 }

@@ -12,16 +12,17 @@ interface Props {
   presenter: DetailPresenter;
   client: TicketsClient;
   onRefresh: () => void;
+  activeTicketId: string | null;
 }
 
-export function TicketBoard({ tickets, status, ticketCount, presenter, client, onRefresh }: Props): React.ReactElement {
+export function TicketBoard({ tickets, status, ticketCount, presenter, client, onRefresh, activeTicketId }: Props): React.ReactElement {
   return (
     <>
       <header className="panel-header">
         <span className="panel-title">workboard</span>
         <span id="ticket-count" className="ticket-count">{ticketCount}</span>
       </header>
-      <TicketList tickets={tickets} presenter={presenter} client={client} onRefresh={onRefresh} />
+      <TicketList tickets={tickets} presenter={presenter} client={client} onRefresh={onRefresh} activeTicketId={activeTicketId} />
       <StatusBar status={status} />
     </>
   );
