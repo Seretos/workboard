@@ -12,7 +12,7 @@ run concurrently in worker threads — otherwise N projects serialise into
 N round-trips and the board waits seconds before the first paint.
 
 GitHub projects are batched into a single GraphQL call via
-`fetch_open_board` (lib-python-projects v0.2.0+) instead of N individual
+`fetch_open_board` (lib-python-projects v0.2.1+) instead of N individual
 REST list_tickets + list_prs pairs. Non-GitHub providers continue through
 the per-project worker-thread fan-out unchanged.
 
