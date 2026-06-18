@@ -25,6 +25,7 @@ try:
         DuplicateWorktreeError,
         InvalidRepoError,
         ProcessAlreadyRunningError,
+        SetupFailedError,
         WorktreeDirLockedError,
         WorktreeError,
         WorktreeNotFoundError,
@@ -78,6 +79,16 @@ async def create_worktree(req: CreateWorktreeRequest) -> dict:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except (BranchNotFoundError, InvalidRepoError, WorktreeError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except SetupFailedError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Worktree '{exc.worktree_id}' was created but setup step "
+                f"'{exc.step_name}' (index {exc.step_index}) failed with "
+                f"returncode {exc.returncode}. "
+                f"See log: {exc.log_path}"
+            ),
+        ) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 

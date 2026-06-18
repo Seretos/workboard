@@ -351,6 +351,37 @@ def test_create_worktree_unexpected_exception_returns_500() -> None:
     assert "disk full or something" in response.json()["detail"]
 
 
+def test_create_worktree_setup_failed_returns_422() -> None:
+    """POST /worktrees returns 422 when SetupFailedError is raised by WorktreeManager.create."""
+    from pathlib import Path
+    from lib_python_worktree import SetupFailedError
+
+    project = _make_project()
+    mock_manager = MagicMock()
+    mock_manager.create.side_effect = SetupFailedError(
+        worktree_id="workboard-fix-42-abcd1234",
+        step_index=0,
+        step_name="npm install",
+        log_path=Path("C:/wt/workboard-fix-42-abcd1234/setup-0.log"),
+        returncode=1,
+    )
+
+    with patch("src.api.worktrees.load_all_projects", return_value=_make_projects_result([project])), \
+         patch("src.api.worktrees.WorktreeManager", return_value=mock_manager):
+        response = client.post("/worktrees", json={
+            "project_id": "workboard",
+            "ticket_number": 42,
+            "ticket_title": "Test",
+            "base_branch": "main",
+        })
+
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert "workboard-fix-42-abcd1234" in detail
+    assert "npm install" in detail
+    assert "1" in detail
+
+
 # ---------------------------------------------------------------------------
 # _branch_slug unit tests
 # ---------------------------------------------------------------------------
