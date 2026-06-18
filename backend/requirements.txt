@@ -6,4 +6,4 @@ httpx>=0.27
 # The transitive lib-python-config git dependency is resolved automatically
 # from its pyproject.
 lib-python-projects @ git+https://github.com/Seretos/lib-python-projects@v0.2.1
-lib-python-worktree @ git+https://github.com/Seretos/lib-python-worktree@v0.1.4
+lib-python-worktree @ git+https://github.com/Seretos/lib-python-worktree@v0.1.5
