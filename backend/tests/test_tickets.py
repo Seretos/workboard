@@ -1128,3 +1128,109 @@ def test_build_worktree_map_degrades_on_store_exception() -> None:
         tickets_module._WORKTREE_LIB_AVAILABLE = original_available
 
     assert result == {}
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for ticket #68: duplicate tickets and non-configured
+# projects leaking onto the board.
+# ---------------------------------------------------------------------------
+
+
+def test_tickets_dedup_when_project_appears_twice() -> None:
+    """Regression #68 (Bug B): when load_all_projects returns duplicate ProjectConfig
+    entries for the same project, the /tickets endpoint returns each ticket exactly once.
+
+    Simulates the scenario where a project ends up in the list twice (e.g. explicit
+    config entry + auto-discovered CWD entry before the filter is applied) and verifies
+    the dedup pass in tickets() prevents duplicate board cards.
+    """
+    proj = _sample_project("dup-proj", "org/dup")
+    # Same project appearing twice in the list.
+    projects_with_dup = [proj, proj]
+
+    ticket = _sample_ticket("42", "Duplicate ticket")
+
+    with patch("src.api.tickets.load_all_projects",
+               return_value=_make_result(projects_with_dup)), \
+         patch("src.api.tickets.fetch_open_board",
+               return_value=[
+                   _make_batch_result(proj, tickets=[ticket]),
+                   _make_batch_result(proj, tickets=[ticket]),
+               ]):
+        response = client.get("/tickets")
+
+    assert response.status_code == 200
+    items = response.json()["tickets"]
+    # Despite two identical project entries each returning the same ticket,
+    # only one row should appear on the board.
+    assert len(items) == 1, (
+        f"Expected 1 ticket but got {len(items)}; dedup did not fire"
+    )
+    assert items[0]["id"] == "42"
+    assert items[0]["project_id"] == "dup-proj"
+
+
+def test_load_all_projects_filters_auto_discovered_when_config_file_present() -> None:
+    """Regression #68 (Bug A): when load_projects returns a result with config_file set,
+    load_all_projects() must strip out projects whose source is 'git-remote' or
+    'token-discovery', keeping only explicitly configured ('config' source) ones.
+
+    This prevents the lib from leaking CWD auto-discovered repos onto the board
+    when the user has a real projects.yml config file.
+    """
+    from lib_python_projects.models import ProjectsLoadResult
+
+    config_proj = _sample_project("configured", "org/configured")
+    config_proj = config_proj.model_copy(update={"source": "config"})
+
+    auto_proj = _sample_project("auto-discovered", "org/auto")
+    auto_proj = auto_proj.model_copy(update={"source": "git-remote"})
+
+    token_proj = _sample_project("token-discovered", "org/token")
+    token_proj = token_proj.model_copy(update={"source": "token-discovery"})
+
+    # Simulate load_projects returning all three, with a config_file set.
+    raw_result = ProjectsLoadResult(
+        state="ok",
+        config_file="projects.yml",
+        search_root="/tmp",
+        projects=[config_proj, auto_proj, token_proj],
+    )
+
+    with patch("src.providers.load_projects", return_value=raw_result):
+        from src.providers import load_all_projects
+        result = load_all_projects()
+
+    project_ids = [p.id for p in result.projects]
+    assert "configured" in project_ids, "Explicitly configured project must survive the filter"
+    assert "auto-discovered" not in project_ids, (
+        "git-remote project must be filtered out when config_file is set"
+    )
+    assert "token-discovered" not in project_ids, (
+        "token-discovery project must be filtered out when config_file is set"
+    )
+    assert len(result.projects) == 1
+
+
+def test_load_all_projects_does_not_filter_when_no_config_file() -> None:
+    """When no config file was found (config_file=None), auto-discovered projects
+    must pass through unchanged — filtering would blank a pure-discovery board.
+    """
+    from lib_python_projects.models import ProjectsLoadResult
+
+    auto_proj = _sample_project("auto-discovered", "org/auto")
+    auto_proj = auto_proj.model_copy(update={"source": "git-remote"})
+
+    raw_result = ProjectsLoadResult(
+        state="ok",
+        config_file=None,
+        search_root="/tmp",
+        projects=[auto_proj],
+    )
+
+    with patch("src.providers.load_projects", return_value=raw_result):
+        from src.providers import load_all_projects
+        result = load_all_projects()
+
+    assert len(result.projects) == 1
+    assert result.projects[0].id == "auto-discovered"

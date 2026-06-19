@@ -54,14 +54,34 @@ def load_all_projects():
     Thin indirection around `load_projects` so tests can monkey-patch
     `src.providers.load_projects` to substitute a deterministic project
     list without touching the disk.
+
+    When a config file was found (`result.config_file` is set), auto-discovered
+    projects whose `source` is `"git-remote"` or `"token-discovery"` are
+    filtered out so that only explicitly configured projects reach the board.
+    Without this filter, `lib_python_projects` appends the CWD git repo as an
+    auto-discovered entry even when a config file is present, causing
+    non-configured projects to appear on the board (ticket #68).
     """
     import sys
 
     mod = sys.modules[__name__]
-    return mod.load_projects(
+    result = mod.load_projects(
         config_filename=_CONFIG_FILENAME,
         config_filename_alt=_CONFIG_FILENAME_ALT,
     )
+
+    # Only filter when a config file was resolved.  When no config file is
+    # found the lib falls back to pure auto-discovery and every entry is
+    # intentional — filtering would blank the board entirely.
+    if result.config_file:
+        _AUTO_SOURCES = {"git-remote", "token-discovery"}
+        filtered = [
+            p for p in result.projects
+            if getattr(p, "source", None) not in _AUTO_SOURCES
+        ]
+        result = result.model_copy(update={"projects": filtered})
+
+    return result
 
 
 def provider_for(project: ProjectConfig):

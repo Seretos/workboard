@@ -358,6 +358,19 @@ async def tickets() -> dict:
             else:
                 ticket_rows.append(row)
 
+    # Dedup by (project_id, ticket_id) to guard against a project appearing
+    # twice in the configured list (e.g. via auto-discovery overlapping an
+    # explicit config entry), which would otherwise emit duplicate board cards
+    # (ticket #68).  First occurrence wins; order is preserved.
+    seen: set[tuple[str, str]] = set()
+    deduped: list[dict] = []
+    for row in ticket_rows:
+        key = (row.get("project_id", ""), str(row.get("id", "")))
+        if key not in seen:
+            seen.add(key)
+            deduped.append(row)
+    ticket_rows = deduped
+
     # `failed_projects` is always populated alongside `rate_limited` today,
     # so the `or failed_projects` guard is kept for defensive forward-compat
     # should a future error class populate failed_projects without setting
