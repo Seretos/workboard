@@ -11,7 +11,7 @@ interface Props {
 }
 
 export function App({ client, presenter, activeTicketId }: Props): React.ReactElement {
-  const { tickets, status, ticketCount, refresh } = useTicketPolling(client);
+  const { tickets, status, ticketCount, refresh } = useTicketPolling(client, presenter);
 
   return (
     <TicketBoard

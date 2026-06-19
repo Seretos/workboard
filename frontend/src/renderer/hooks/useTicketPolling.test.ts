@@ -58,8 +58,11 @@ function makeMockClient(
   };
 }
 
-function makeMockPresenter(): DetailPresenter {
-  return { open: vi.fn() as (ticket: DetailTicket) => void };
+function makeMockPresenter(activeId: string | null = null): DetailPresenter {
+  return {
+    open: vi.fn() as (ticket: DetailTicket) => void,
+    getActiveId: vi.fn().mockReturnValue(activeId) as () => string | null,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -599,6 +602,30 @@ describe("useTicketPolling — focus refresh", () => {
     expect(fetchJson.mock.calls.length).toBe(callsAfterFirstFocus + 1);
   });
 
+  it("focus-refresh also notifies presenter when active ticket is found", async () => {
+    const ticket = makeTicket({ id: "42", project_id: "proj-a", project_path: "/repos/alpha" });
+    const fetchJson = vi.fn().mockResolvedValue(makeSuccessResponse([ticket]));
+    const presenter = makeMockPresenter("42");
+
+    renderHook(() => useTicketPolling(makeMockClient(fetchJson), presenter));
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    // Advance past throttle window then fire focus.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(31_000);
+    });
+
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+      await Promise.resolve();
+    });
+
+    expect(presenter.open).toHaveBeenCalledWith(expect.objectContaining({ id: "42" }));
+  });
+
   it("no focus-refresh while in backoff (rate-limited)", async () => {
     const ticket = makeTicket({ id: "1", project_id: "proj-a", project_path: "/repos/alpha" });
     const fetchJson = vi
@@ -641,6 +668,150 @@ describe("useTicketPolling — focus refresh", () => {
     expect(fetchJson.mock.calls.length).toBe(callsAfterRateLimit);
 
     // Cleanup: crash the backend so the backoff timeout is cancelled.
+    act(() => { capturedCrashCb?.(null); });
+  });
+});
+
+describe("useTicketPolling — presenter notification", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("on successful poll: presenter.open is called with the active ticket when its id matches", async () => {
+    const ticket = makeTicket({ id: "abc", project_id: "proj-a", project_path: "/repos/alpha" });
+    const fetchJson = vi.fn().mockResolvedValue(makeSuccessResponse([ticket]));
+    const client = makeMockClient(fetchJson);
+    const presenter = makeMockPresenter("abc");
+
+    renderHook(() => useTicketPolling(client, presenter));
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(presenter.open).toHaveBeenCalledOnce();
+    expect(presenter.open).toHaveBeenCalledWith(expect.objectContaining({ id: "abc" }));
+  });
+
+  it("on successful poll: presenter.open is NOT called when active id does not match any ticket", async () => {
+    const ticket = makeTicket({ id: "abc", project_id: "proj-a", project_path: "/repos/alpha" });
+    const fetchJson = vi.fn().mockResolvedValue(makeSuccessResponse([ticket]));
+    const client = makeMockClient(fetchJson);
+    const presenter = makeMockPresenter("nonexistent-id");
+
+    renderHook(() => useTicketPolling(client, presenter));
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(presenter.open).not.toHaveBeenCalled();
+  });
+
+  it("on successful poll: presenter.open is NOT called when getActiveId returns null", async () => {
+    const ticket = makeTicket({ id: "abc", project_id: "proj-a", project_path: "/repos/alpha" });
+    const fetchJson = vi.fn().mockResolvedValue(makeSuccessResponse([ticket]));
+    const client = makeMockClient(fetchJson);
+    const presenter = makeMockPresenter(null);
+
+    renderHook(() => useTicketPolling(client, presenter));
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(presenter.open).not.toHaveBeenCalled();
+  });
+
+  it("on partial failure: presenter.open is called with the active ticket", async () => {
+    const ticket = makeTicket({ id: "xyz", project_id: "proj-a", project_path: "/repos/alpha" });
+    const partialResponse = {
+      ok: true,
+      status: 200,
+      data: {
+        tickets: [ticket],
+        poll_errors: { rate_limited: false, retry_after: null, failed_projects: ["proj-b"] },
+      },
+    };
+    const fetchJson = vi.fn().mockResolvedValue(partialResponse);
+    const client = makeMockClient(fetchJson);
+    const presenter = makeMockPresenter("xyz");
+
+    renderHook(() => useTicketPolling(client, presenter));
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(presenter.open).toHaveBeenCalledOnce();
+    expect(presenter.open).toHaveBeenCalledWith(expect.objectContaining({ id: "xyz" }));
+  });
+
+  it("on rate-limit with fresh tickets: presenter.open is called with the active ticket", async () => {
+    vi.useFakeTimers();
+
+    const ticket = makeTicket({ id: "rl-ticket", project_id: "proj-a", project_path: "/repos/alpha" });
+    const fetchJson = vi
+      .fn()
+      .mockResolvedValueOnce(makeSuccessResponse([]))
+      .mockResolvedValueOnce(makeRateLimitResponse([ticket], 60, []));
+    let capturedCrashCb: ((code: number | null) => void) | undefined;
+    const onBackendCrashed = vi.fn((cb: (code: number | null) => void) => {
+      capturedCrashCb = cb;
+    });
+    const client = makeMockClient(fetchJson, onBackendCrashed);
+    const presenter = makeMockPresenter("rl-ticket");
+
+    renderHook(() => useTicketPolling(client, presenter));
+
+    // Initial load (empty — presenter.open should not be called yet).
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(presenter.open).not.toHaveBeenCalled();
+
+    // Trigger the rate-limit poll (has fresh data).
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
+    });
+
+    expect(presenter.open).toHaveBeenCalledOnce();
+    expect(presenter.open).toHaveBeenCalledWith(expect.objectContaining({ id: "rl-ticket" }));
+
+    // Cleanup.
+    act(() => { capturedCrashCb?.(null); });
+  });
+
+  it("on rate-limit with empty tickets: presenter.open is NOT called (stale preservation)", async () => {
+    vi.useFakeTimers();
+
+    const ticket = makeTicket({ id: "stale", project_id: "proj-a", project_path: "/repos/alpha" });
+    const fetchJson = vi
+      .fn()
+      .mockResolvedValueOnce(makeSuccessResponse([ticket]))
+      .mockResolvedValueOnce(makeRateLimitResponse([], 60, []));
+    let capturedCrashCb: ((code: number | null) => void) | undefined;
+    const onBackendCrashed = vi.fn((cb: (code: number | null) => void) => {
+      capturedCrashCb = cb;
+    });
+    const client = makeMockClient(fetchJson, onBackendCrashed);
+    const presenter = makeMockPresenter("stale");
+
+    renderHook(() => useTicketPolling(client, presenter));
+
+    // Initial load — presenter.open called once from the successful first poll.
+    await act(async () => {
+      await Promise.resolve();
+    });
+    const openCallsAfterInit = (presenter.open as ReturnType<typeof vi.fn>).mock.calls.length;
+
+    // Trigger rate-limit with empty data — presenter.open must NOT be called again.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
+    });
+
+    expect((presenter.open as ReturnType<typeof vi.fn>).mock.calls.length).toBe(openCallsAfterInit);
+
     act(() => { capturedCrashCb?.(null); });
   });
 });
