@@ -27,10 +27,11 @@ def _make_projects_result(projects):
     return result
 
 
-def _make_project(project_id: str = "workboard", local_path: str = "E:/development/workboard"):
+def _make_project(project_id: str = "workboard", local_path: str = "E:/development/workboard", default_branch: str = "main"):
     project = MagicMock()
     project.id = project_id
     project.local_path = local_path
+    project.default_branch = default_branch
     return project
 
 
@@ -74,7 +75,6 @@ def test_create_worktree_ok() -> None:
             "project_id": "workboard",
             "ticket_number": 42,
             "ticket_title": "Some Feature",
-            "base_branch": "main",
         })
 
     assert response.status_code == 201
@@ -104,7 +104,6 @@ def test_create_worktree_branch_slug_formation() -> None:
             "project_id": "workboard",
             "ticket_number": 54,
             "ticket_title": "Worktrees erzeugen und löschen",
-            "base_branch": "main",
         })
 
     assert response.status_code == 201
@@ -123,7 +122,6 @@ def test_create_worktree_project_not_found() -> None:
             "project_id": "nonexistent",
             "ticket_number": 1,
             "ticket_title": "Test",
-            "base_branch": "main",
         })
 
     assert response.status_code == 404
@@ -141,7 +139,6 @@ def test_create_worktree_no_local_path() -> None:
             "project_id": "workboard",
             "ticket_number": 42,
             "ticket_title": "Test",
-            "base_branch": "main",
         })
 
     assert response.status_code == 422
@@ -159,7 +156,6 @@ def test_create_worktree_lib_unavailable() -> None:
             "project_id": "workboard",
             "ticket_number": 42,
             "ticket_title": "Test",
-            "base_branch": "main",
         })
     finally:
         wt_module._WORKTREE_LIB_AVAILABLE = original
@@ -181,7 +177,6 @@ def test_create_worktree_duplicate() -> None:
             "project_id": "workboard",
             "ticket_number": 42,
             "ticket_title": "Test",
-            "base_branch": "main",
         })
 
     assert response.status_code == 409
@@ -203,7 +198,6 @@ def test_create_worktree_branch_already_checked_out() -> None:
             "project_id": "workboard",
             "ticket_number": 42,
             "ticket_title": "Test",
-            "base_branch": "main",
         })
 
     assert response.status_code == 409
@@ -223,7 +217,6 @@ def test_create_worktree_dirty() -> None:
             "project_id": "workboard",
             "ticket_number": 42,
             "ticket_title": "Test",
-            "base_branch": "main",
         })
 
     assert response.status_code == 409
@@ -344,7 +337,6 @@ def test_create_worktree_unexpected_exception_returns_500() -> None:
             "project_id": "workboard",
             "ticket_number": 42,
             "ticket_title": "Test",
-            "base_branch": "main",
         })
 
     assert response.status_code == 500
@@ -372,7 +364,6 @@ def test_create_worktree_setup_failed_returns_422() -> None:
             "project_id": "workboard",
             "ticket_number": 42,
             "ticket_title": "Test",
-            "base_branch": "main",
         })
 
     assert response.status_code == 422
@@ -406,3 +397,32 @@ def test_branch_slug_empty_fallback() -> None:
     from src.api.worktrees import _branch_slug
     assert _branch_slug("!!!") == "x"
     assert _branch_slug("") == "x"
+
+
+def test_create_worktree_uses_project_default_branch() -> None:
+    """POST /worktrees passes project.default_branch (not a hardcoded 'main') to WorktreeManager.create.
+
+    Regression test for #77: worktree creation hardcodes base branch 'main'
+    instead of using the project's configured default branch.
+    """
+    project = _make_project(default_branch="master")
+    record = _make_worktree_record()
+
+    mock_manager = MagicMock()
+    mock_manager.create.return_value = record
+
+    with patch("src.api.worktrees.load_all_projects", return_value=_make_projects_result([project])), \
+         patch("src.api.worktrees.WorktreeManager", return_value=mock_manager):
+        response = client.post("/worktrees", json={
+            "project_id": "workboard",
+            "ticket_number": 42,
+            "ticket_title": "Some Feature",
+        })
+
+    assert response.status_code == 201
+    # The critical assertion: base branch must come from project.default_branch, not "main"
+    mock_manager.create.assert_called_once_with(
+        "E:/development/workboard",
+        "fix/42-some-feature",
+        base="master",
+    )

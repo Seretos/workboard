@@ -39,7 +39,6 @@ export function TicketCard({ ticket, presenter, client, onRefresh, isActive }: P
           project_id: ticket.project_id,
           ticket_number: parseInt(ticket.id, 10) || 0,
           ticket_title: ticket.title,
-          base_branch: "main",
         }),
       });
       if (!response.ok) {

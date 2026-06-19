@@ -51,7 +51,6 @@ class CreateWorktreeRequest(BaseModel):
     project_id: str
     ticket_number: int
     ticket_title: str
-    base_branch: str = "main"
 
 
 @router.post("/worktrees", status_code=201)
@@ -72,7 +71,7 @@ async def create_worktree(req: CreateWorktreeRequest) -> dict:
     branch = f"fix/{req.ticket_number}-{_branch_slug(req.ticket_title)}"
 
     try:
-        record = WorktreeManager().create(local_path, branch, base=req.base_branch)
+        record = WorktreeManager().create(local_path, branch, base=project.default_branch)
     except HTTPException:
         raise
     except (DuplicateWorktreeError, BranchAlreadyCheckedOutError, DirtyWorktreeError) as exc:
