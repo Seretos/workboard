@@ -60,7 +60,7 @@ def load_all_projects():
     filtered out so that only explicitly configured projects reach the board.
     Without this filter, `lib_python_projects` appends the CWD git repo as an
     auto-discovered entry even when a config file is present, causing
-    non-configured projects to appear on the board (ticket #68).
+    non-configured projects to appear on the board (tickets #68, #74).
     """
     import sys
 
