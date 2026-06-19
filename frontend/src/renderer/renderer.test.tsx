@@ -591,11 +591,12 @@ describe("TicketCard — active border", () => {
 });
 
 // ---------------------------------------------------------------------------
-// TicketCard — label chips (ticket #59)
+// TicketCard — label chips removed (ticket #69)
+// Labels are no longer shown on the card; they appear on the detail view.
 // ---------------------------------------------------------------------------
 
 describe("TicketCard — label chips", () => {
-  it("renders .card-labels container when ticket has labels", () => {
+  it("does NOT render .card-labels container even when ticket has labels", () => {
     const ticket = makeTicket({
       id: "1",
       project_id: "proj-a",
@@ -607,10 +608,10 @@ describe("TicketCard — label chips", () => {
       <TicketCard ticket={ticket} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} isActive={false} />
     );
     const labelsEl = container.querySelector(".card-labels");
-    expect(labelsEl).not.toBeNull();
+    expect(labelsEl).toBeNull();
   });
 
-  it("renders one .card-label-chip per label with correct text", () => {
+  it("does NOT render any .card-label-chip elements", () => {
     const ticket = makeTicket({
       id: "1",
       project_id: "proj-a",
@@ -622,10 +623,7 @@ describe("TicketCard — label chips", () => {
       <TicketCard ticket={ticket} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} isActive={false} />
     );
     const chips = container.querySelectorAll(".card-label-chip");
-    expect(chips).toHaveLength(3);
-    expect(chips[0].textContent).toBe("bug");
-    expect(chips[1].textContent).toBe("urgent");
-    expect(chips[2].textContent).toBe("feature");
+    expect(chips).toHaveLength(0);
   });
 
   it("does NOT render .card-labels when ticket has no labels (empty array)", () => {

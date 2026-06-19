@@ -72,27 +72,11 @@ export function DetailView({ ticket, onClose, openExternal }: Props): React.Reac
     return () => bodyContainer.removeEventListener("click", handleClick);
   }, []);
 
-  const handleGhLinkClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
-    e.preventDefault();
-    if (t.url) {
-      resolvedOpenExternal(t.url);
-    }
-  };
-
   const handleGhBtnClick = () => {
     if (t.url) {
       resolvedOpenExternal(t.url);
     }
   };
-
-  const handlePrLinkClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
-    e.preventDefault();
-    if (t.pull_request?.url) {
-      resolvedOpenExternal(t.pull_request.url);
-    }
-  };
-
-  const handleClose = onClose ?? (() => window.close());
 
   return (
     <>
@@ -108,9 +92,9 @@ export function DetailView({ ticket, onClose, openExternal }: Props): React.Reac
         <h1 id="detail-title" className="detail-title">{t.title ?? ""}</h1>
         <div className="detail-sub-row">
           <span id="detail-status-pill" className="detail-status-pill">{t.status ?? ""}</span>
-          <a id="detail-gh-link" className="detail-link" onClick={handleGhLinkClick} href="#">
-            Open on GitHub
-          </a>
+          {(t.labels ?? []).map((label) => (
+            <span key={label} className="card-label-chip">{label}</span>
+          ))}
         </div>
       </header>
 
@@ -121,32 +105,22 @@ export function DetailView({ ticket, onClose, openExternal }: Props): React.Reac
           ref={bodyContainerRef}
           dangerouslySetInnerHTML={{ __html: sanitized }}
         />
-        <div
-          id="detail-pr-section"
-          className="detail-pr-section"
-          style={{ display: t.pull_request != null ? "" : "none" }}
-        >
-          <a
-            id="detail-pr-link"
-            className="detail-link"
-            onClick={handlePrLinkClick}
-            href="#"
-          >
-            Pull Request
-          </a>
-          <span id="detail-pr-status" className="card-provider">
-            {t.pull_request?.status ?? ""}
-          </span>
-        </div>
       </div>
 
       <footer className="detail-footer">
-        <button className="detail-btn-ghost" id="detail-close-footer" type="button" onClick={handleClose}>
-          Schlie&szlig;en
-        </button>
         <button className="detail-btn-primary" id="detail-gh-btn" type="button" onClick={handleGhBtnClick}>
-          In Browser &#246;ffnen
+          Issue
         </button>
+        {t.pull_request != null && (
+          <button
+            className="detail-btn-primary"
+            id="detail-pr-btn"
+            type="button"
+            onClick={() => { if (t.pull_request?.url) resolvedOpenExternal(t.pull_request.url); }}
+          >
+            Pull Request
+          </button>
+        )}
       </footer>
     </>
   );
