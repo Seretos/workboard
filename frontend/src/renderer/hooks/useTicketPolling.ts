@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import type { TicketsClient } from "../client/TicketsClient";
+import type { DetailPresenter } from "../detail/DetailPresenter";
 import type { TicketRow, TicketsResponse } from "../types";
 
 export const POLL_INTERVAL_MS = 300_000;
@@ -12,7 +13,8 @@ export interface PollingState {
 }
 
 export function useTicketPolling(
-  client: TicketsClient
+  client: TicketsClient,
+  presenter: DetailPresenter
 ): PollingState {
   const [tickets, setTickets] = useState<TicketRow[]>([]);
   const [status, setStatus] = useState<string>("");
@@ -31,6 +33,15 @@ export function useTicketPolling(
   const pausePollForBackoffRef = useRef<(retryAfterSeconds: number | null) => void>(
     () => {}
   );
+
+  function notifyPresenter(tickets: TicketRow[]): void {
+    const activeId = presenter.getActiveId();
+    if (activeId === null) return;
+    const ticket = tickets.find((t) => t.id === activeId);
+    if (ticket !== undefined) {
+      presenter.open(ticket);
+    }
+  }
 
   const loadTicketsRef = useRef<() => Promise<void>>(() => Promise.resolve());
 
@@ -79,6 +90,7 @@ export function useTicketPolling(
         if (data.tickets.length > 0) {
           setTickets(data.tickets);
           lastTicketsRef.current = data.tickets;
+          notifyPresenter(data.tickets);
           setTicketCount(String(data.tickets.length));
         }
         // else: stale preservation — don't update tickets/ticketCount
@@ -95,11 +107,13 @@ export function useTicketPolling(
         // Partial failure
         setTickets(data.tickets);
         lastTicketsRef.current = data.tickets;
+        notifyPresenter(data.tickets);
         setStatus(`${poll_errors.failed_projects.length} Projekt(e) nicht geladen`);
       } else {
         // Full success
         setTickets(data.tickets);
         lastTicketsRef.current = data.tickets;
+        notifyPresenter(data.tickets);
         setStatus(data.tickets.length === 0 ? "Keine offenen Tickets" : "");
       }
 
