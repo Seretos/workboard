@@ -272,6 +272,79 @@ def test_tickets_loads_config_with_correct_filename() -> None:
     )
 
 
+def test_tickets_filters_out_non_config_projects() -> None:
+    """Only projects with source='config' appear on the board.
+
+    Regression test for ticket #74: auto-discovered (source='git-remote') and
+    token-discovered (source='token-discovery') projects must be stripped by
+    load_all_projects() before the endpoint sees the project list.
+
+    Three projects are returned by load_projects: one config-sourced (GitHub),
+    one git-remote (GitLab), and one token-discovery (GitLab). The mock
+    load_projects returns all three; load_all_projects should filter down to
+    just the config project, so only its tickets appear in /tickets.
+    """
+    config_project = ProjectConfig(
+        id="config-proj",
+        description="Explicitly configured project",
+        provider="github",
+        path="org/config-proj",
+        source="config",
+    )
+    git_remote_project = ProjectConfig(
+        id="git-remote-proj",
+        description="Auto-discovered via git remote",
+        provider="gitlab",
+        path="org/git-remote-proj",
+        source="git-remote",
+    )
+    token_discovery_project = ProjectConfig(
+        id="token-discovery-proj",
+        description="Discovered via GitLab token",
+        provider="gitlab",
+        path="org/token-discovery-proj",
+        source="token-discovery",
+    )
+    all_three = [config_project, git_remote_project, token_discovery_project]
+
+    # Patch load_projects (the underlying lib call) to return all three.
+    # config_file must be set so the guard in load_all_projects() activates.
+    mock_load = MagicMock(return_value=ProjectsLoadResult(
+        state="ok",
+        search_root="/tmp",
+        config_file="projects.yml",
+        projects=all_three,
+    ))
+
+    # fetch_open_board is patched to accept whichever projects reach it.
+    # We capture what projects it actually receives to assert the filter ran.
+    captured_projects: list = []
+
+    def capturing_batch(projects, token=None):
+        captured_projects.extend(projects)
+        return [_make_batch_result(config_project, tickets=[_sample_ticket("config-1")])]
+
+    with patch("src.providers.load_projects", mock_load), \
+         patch("src.api.tickets.fetch_open_board", side_effect=capturing_batch):
+        response = client.get("/tickets")
+
+    assert response.status_code == 200
+    items = response.json()["tickets"]
+
+    # Only the config-sourced project's ticket must appear.
+    assert len(items) == 1
+    assert items[0]["project_id"] == "config-proj"
+
+    # The non-config projects must never have reached fetch_open_board.
+    reached_ids = {p.id for p in captured_projects}
+    assert "git-remote-proj" not in reached_ids, (
+        "git-remote project leaked through to fetch_open_board"
+    )
+    assert "token-discovery-proj" not in reached_ids, (
+        "token-discovery project leaked through to fetch_open_board"
+    )
+
+
 def test_tickets_file_not_found_returns_500() -> None:
     """GET /tickets when project loading raises FileNotFoundError returns HTTP 500."""
     no_raise_client = TestClient(app, raise_server_exceptions=False)
