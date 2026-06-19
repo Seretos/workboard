@@ -144,7 +144,7 @@ describe("DetailView — XSS sanitization", () => {
 // ---------------------------------------------------------------------------
 
 describe("DetailView — GitHub link", () => {
-  it("clicking the GitHub link calls window.detail.openExternal with the ticket url", async () => {
+  it("clicking the Issue button calls window.detail.openExternal with the ticket url", async () => {
     const openExternal = vi.fn(() => Promise.resolve());
     setupDetailMock(openExternal);
 
@@ -152,11 +152,11 @@ describe("DetailView — GitHub link", () => {
       <DetailView ticket={makeDetailTicket({ url: "https://github.com/org/repo/issues/18" })} />
     );
 
-    const link = q(container, ".detail-sub-row .detail-link") as HTMLAnchorElement;
-    expect(link).not.toBeNull();
+    const btn = q(container, '[id="detail-gh-btn"]') as HTMLButtonElement;
+    expect(btn).not.toBeNull();
 
     await act(async () => {
-      link.click();
+      btn.click();
     });
 
     expect(openExternal).toHaveBeenCalledWith("https://github.com/org/repo/issues/18");
@@ -248,46 +248,29 @@ describe("DetailView — link delegation in body", () => {
 describe("DetailView — PR section", () => {
   beforeEach(() => setupDetailMock());
 
-  it("PR section is hidden when pull_request is null", () => {
+  it("PR button is absent when pull_request is null", () => {
     const { container } = render(
       <DetailView ticket={makeDetailTicket({ pull_request: null })} />
     );
-    const section = q(container, ".detail-pr-section") as HTMLElement;
-    expect(section).not.toBeNull();
-    expect(section.style.display).toBe("none");
+    expect(q(container, '[id="detail-pr-btn"]')).toBeNull();
   });
 
-  it("PR section is hidden when pull_request is undefined", () => {
+  it("PR button is absent when pull_request is undefined", () => {
     const ticket: DetailTicket = { title: "T", url: "https://example.com" };
     const { container } = render(<DetailView ticket={ticket} />);
-    const section = q(container, ".detail-pr-section") as HTMLElement;
-    expect(section).not.toBeNull();
-    expect(section.style.display).toBe("none");
+    expect(q(container, '[id="detail-pr-btn"]')).toBeNull();
   });
 
-  it("PR section is visible when pull_request is present", () => {
+  it("PR button is present when pull_request is non-null", () => {
     const { container } = render(
       <DetailView ticket={makeDetailTicket({
         pull_request: { url: "https://github.com/org/repo/pull/5", status: "open" },
       })} />
     );
-    const section = q(container, ".detail-pr-section") as HTMLElement;
-    expect(section).not.toBeNull();
-    expect(section.style.display).not.toBe("none");
+    expect(q(container, '[id="detail-pr-btn"]')).not.toBeNull();
   });
 
-  it("PR status text is set from pull_request.status", () => {
-    const { container } = render(
-      <DetailView ticket={makeDetailTicket({
-        pull_request: { url: "https://github.com/org/repo/pull/5", status: "merged" },
-      })} />
-    );
-    const statusEl = q(container, ".detail-pr-section .card-provider");
-    expect(statusEl).not.toBeNull();
-    expect(statusEl!.textContent).toBe("merged");
-  });
-
-  it("clicking the PR link calls window.detail.openExternal with the PR url", async () => {
+  it("clicking the PR button calls window.detail.openExternal with the PR url", async () => {
     const openExternal = vi.fn(() => Promise.resolve());
     setupDetailMock(openExternal);
 
@@ -298,30 +281,26 @@ describe("DetailView — PR section", () => {
       })} />
     );
 
-    const prSection = q(container, ".detail-pr-section")!;
-    const prLink = prSection.querySelector(".detail-link") as HTMLAnchorElement;
-    expect(prLink).not.toBeNull();
+    const prBtn = q(container, '[id="detail-pr-btn"]') as HTMLButtonElement;
+    expect(prBtn).not.toBeNull();
 
     await act(async () => {
-      prLink.click();
+      prBtn.click();
     });
 
     expect(openExternal).toHaveBeenCalledWith(prUrl);
   });
 
-  it("regression: switching from PR ticket to no-PR ticket hides the PR section", () => {
+  it("regression: switching from PR ticket to no-PR ticket removes the PR button", () => {
     const { container, rerender } = render(
       <DetailView ticket={makeDetailTicket({
         pull_request: { url: "https://github.com/org/repo/pull/5", status: "open" },
       })} />
     );
-    const section = q(container, ".detail-pr-section") as HTMLElement;
-    expect(section).not.toBeNull();
-    expect(section.style.display).not.toBe("none");
+    expect(q(container, '[id="detail-pr-btn"]')).not.toBeNull();
 
     rerender(<DetailView ticket={makeDetailTicket({ pull_request: null })} />);
-    // Use same container reference — section is now updated in-place
-    expect(q(container, ".detail-pr-section")!.style.display).toBe("none");
+    expect(q(container, '[id="detail-pr-btn"]')).toBeNull();
   });
 });
 
@@ -360,11 +339,11 @@ describe("DetailView — openExternal prop (browser fallback)", () => {
       />
     );
 
-    const link = q(container, ".detail-sub-row .detail-link") as HTMLAnchorElement;
-    expect(link).not.toBeNull();
+    const btn = q(container, '[id="detail-gh-btn"]') as HTMLButtonElement;
+    expect(btn).not.toBeNull();
 
     await act(async () => {
-      link.click();
+      btn.click();
     });
 
     expect(propOpenExternal).toHaveBeenCalledWith("https://github.com/org/repo/issues/18");
@@ -382,11 +361,11 @@ describe("DetailView — openExternal prop (browser fallback)", () => {
       <DetailView ticket={makeDetailTicket({ url: "https://github.com/org/repo/issues/99" })} />
     );
 
-    const link = q(container, ".detail-sub-row .detail-link") as HTMLAnchorElement;
-    expect(link).not.toBeNull();
+    const btn = q(container, '[id="detail-gh-btn"]') as HTMLButtonElement;
+    expect(btn).not.toBeNull();
 
     await act(async () => {
-      link.click();
+      btn.click();
     });
 
     expect(openSpy).toHaveBeenCalledWith(
@@ -397,50 +376,6 @@ describe("DetailView — openExternal prop (browser fallback)", () => {
 
     openSpy.mockRestore();
     (window as Window & typeof globalThis).detail = saved;
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Fix #2: onClose prop
-// ---------------------------------------------------------------------------
-
-describe("DetailView — onClose prop", () => {
-  beforeEach(() => setupDetailMock());
-
-  it("calls onClose prop when Schließen button is clicked (browser modal mode)", async () => {
-    const onClose = vi.fn();
-
-    const { container } = render(
-      <DetailView ticket={makeDetailTicket()} onClose={onClose} />
-    );
-
-    const closeBtn = q(container, ".detail-btn-ghost");
-    expect(closeBtn).not.toBeNull();
-
-    await act(async () => {
-      closeBtn!.click();
-    });
-
-    expect(onClose).toHaveBeenCalled();
-  });
-
-  it("falls back to window.close() when no onClose prop provided (Electron window mode)", async () => {
-    const closeSpy = vi.spyOn(window, "close").mockImplementation(() => {});
-
-    const { container } = render(
-      <DetailView ticket={makeDetailTicket()} />
-    );
-
-    const closeBtn = q(container, ".detail-btn-ghost");
-    expect(closeBtn).not.toBeNull();
-
-    await act(async () => {
-      closeBtn!.click();
-    });
-
-    expect(closeSpy).toHaveBeenCalled();
-
-    closeSpy.mockRestore();
   });
 });
 
@@ -468,5 +403,59 @@ describe("DetailView — project name in header", () => {
     const { container } = render(<DetailView ticket={ticket} />);
     const el = q(container, ".detail-project-name");
     expect(el).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fix #69: label chips in detail-sub-row
+// ---------------------------------------------------------------------------
+
+describe("DetailView — label chips in detail-sub-row", () => {
+  beforeEach(() => setupDetailMock());
+
+  it("renders one .card-label-chip per label inside .detail-sub-row", () => {
+    const ticket: DetailTicket = { ...makeDetailTicket(), labels: ["bug", "frontend"] };
+    const { container } = render(<DetailView ticket={ticket} />);
+    const subRow = q(container, ".detail-sub-row")!;
+    expect(subRow).not.toBeNull();
+    const chips = subRow.querySelectorAll(".card-label-chip");
+    expect(chips).toHaveLength(2);
+    expect(chips[0].textContent).toBe("bug");
+    expect(chips[1].textContent).toBe("frontend");
+  });
+
+  it("renders no .card-label-chip inside .detail-sub-row when labels is empty", () => {
+    const ticket: DetailTicket = { ...makeDetailTicket(), labels: [] };
+    const { container } = render(<DetailView ticket={ticket} />);
+    const subRow = q(container, ".detail-sub-row")!;
+    expect(subRow).not.toBeNull();
+    const chips = subRow.querySelectorAll(".card-label-chip");
+    expect(chips).toHaveLength(0);
+  });
+
+  it("renders no .card-label-chip when labels is undefined", () => {
+    const ticket: DetailTicket = makeDetailTicket(); // labels not set
+    const { container } = render(<DetailView ticket={ticket} />);
+    const subRow = q(container, ".detail-sub-row")!;
+    expect(subRow).not.toBeNull();
+    const chips = subRow.querySelectorAll(".card-label-chip");
+    expect(chips).toHaveLength(0);
+  });
+
+  it("regression: #detail-gh-link anchor is absent (replaced by label chips)", () => {
+    const { container } = render(<DetailView ticket={makeDetailTicket()} />);
+    expect(q(container, "#detail-gh-link")).toBeNull();
+  });
+
+  it("Issue button (#detail-gh-btn) has text 'Issue'", () => {
+    const { container } = render(<DetailView ticket={makeDetailTicket()} />);
+    const btn = q(container, '[id="detail-gh-btn"]');
+    expect(btn).not.toBeNull();
+    expect(btn!.textContent).toBe("Issue");
+  });
+
+  it("regression: #detail-close-footer button is absent", () => {
+    const { container } = render(<DetailView ticket={makeDetailTicket()} />);
+    expect(q(container, "#detail-close-footer")).toBeNull();
   });
 });

@@ -96,13 +96,6 @@ export function TicketCard({ ticket, presenter, client, onRefresh, isActive }: P
       </div>
       <div className="card-title">{ticket.title ?? ""}</div>
       <div className="card-meta">{metaParts.join(" · ")}</div>
-      {ticket.labels.length > 0 && (
-        <div className="card-labels">
-          {ticket.labels.map((label) => (
-            <span key={label} className="card-label-chip">{label}</span>
-          ))}
-        </div>
-      )}
       {ticket.worktree == null ? (
         <button
           className="card-worktree-btn"
