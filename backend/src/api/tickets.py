@@ -42,7 +42,7 @@ from lib_python_projects.providers.base import (
 from src.providers import load_all_projects, provider_for
 
 try:
-    from lib_python_worktree import WorktreeRecord, YamlStateStore
+    from lib_python_worktree import WorktreeManager, WorktreeRecord, YamlStateStore
     _WORKTREE_LIB_AVAILABLE = True
 except ImportError:  # pragma: no cover — missing in test env until installed
     _WORKTREE_LIB_AVAILABLE = False
@@ -150,6 +150,17 @@ def _enrich_rows(
     """
     pr_map = _build_pr_map(prs)
     wt_map = _build_worktree_map(getattr(project, "local_path", None))
+
+    if _WORKTREE_LIB_AVAILABLE and wt_map:
+        open_ticket_nums = {int(t.id) for t in tickets if t.id.isdigit()}
+        for ticket_num, rec in list(wt_map.items()):
+            if ticket_num not in open_ticket_nums:
+                try:
+                    WorktreeManager().remove(rec.id, force=True, kill_blocking_processes=True)
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("failed to remove orphaned worktree %s: %s", rec.id, exc)
+                del wt_map[ticket_num]
+
     rows: list[dict] = []
     for ticket in tickets:
         row = asdict(ticket)

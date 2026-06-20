@@ -1307,3 +1307,131 @@ def test_load_all_projects_does_not_filter_when_no_config_file() -> None:
 
     assert len(result.projects) == 1
     assert result.projects[0].id == "auto-discovered"
+
+
+# ---------------------------------------------------------------------------
+# Tests for ticket #78: auto-delete orphaned worktrees during poll.
+# ---------------------------------------------------------------------------
+
+
+def test_enrich_rows_removes_orphaned_worktree() -> None:
+    """Orphaned worktree (ticket not in open list) is deleted via WorktreeManager.remove().
+
+    Regression for #78: _enrich_rows must call WorktreeManager().remove() with
+    force=True and kill_blocking_processes=True for every wt_map entry whose
+    ticket number is absent from the open ticket list.
+    """
+    import src.api.tickets as tickets_module
+
+    project = _sample_project()
+    # wt_map contains ticket 99 (orphan) — open tickets only has ticket 42.
+    orphan_rec = _sample_worktree_record(branch="fix/99-orphaned", path="C:/wt/orphan")
+    orphan_rec.id = "workboard-fix-99-deadbeef"
+
+    open_ticket = _sample_ticket("42", "Open ticket")
+
+    original = tickets_module._WORKTREE_LIB_AVAILABLE
+    try:
+        tickets_module._WORKTREE_LIB_AVAILABLE = True
+        # Patch _build_worktree_map to return a map with the orphaned record
+        # already keyed by ticket number, bypassing the repo_root filter so
+        # the test focuses purely on the orphan-deletion logic.
+        with patch("src.api.tickets.WorktreeManager") as mock_wm_cls, \
+             patch("src.api.tickets._build_worktree_map", return_value={99: orphan_rec}):
+            mock_wm_cls.return_value = MagicMock()
+            tickets_module._enrich_rows(project, [open_ticket], [])
+    finally:
+        tickets_module._WORKTREE_LIB_AVAILABLE = original
+
+    mock_wm_cls.return_value.remove.assert_called_once_with(
+        orphan_rec.id, force=True, kill_blocking_processes=True
+    )
+
+
+def test_enrich_rows_does_not_remove_open_worktree() -> None:
+    """A worktree whose ticket is still open must NOT be deleted.
+
+    Regression for #78: _enrich_rows must leave wt_map entries alone when
+    their ticket number appears in the open ticket list.
+    """
+    import src.api.tickets as tickets_module
+
+    project = _sample_project()
+    live_rec = _sample_worktree_record(branch="fix/42-live", path="C:/wt/live")
+    live_rec.id = "workboard-fix-42-cafebabe"
+
+    open_ticket = _sample_ticket("42", "Still open")
+
+    original = tickets_module._WORKTREE_LIB_AVAILABLE
+    try:
+        tickets_module._WORKTREE_LIB_AVAILABLE = True
+        # Ticket 42 is in both wt_map and the open ticket list — must not be deleted.
+        with patch("src.api.tickets.WorktreeManager") as mock_wm_cls, \
+             patch("src.api.tickets._build_worktree_map", return_value={42: live_rec}):
+            mock_wm_cls.return_value = MagicMock()
+            tickets_module._enrich_rows(project, [open_ticket], [])
+    finally:
+        tickets_module._WORKTREE_LIB_AVAILABLE = original
+
+    mock_wm_cls.return_value.remove.assert_not_called()
+
+
+def test_enrich_rows_deletion_failure_is_logged_not_raised() -> None:
+    """WorktreeManager.remove() raising must not propagate — endpoint stays HTTP 200.
+
+    Regression for #78: deletion failures are caught, logged as warnings, and
+    the poll cycle must continue normally.
+    """
+    import src.api.tickets as tickets_module
+
+    project = _sample_project()
+    orphan_rec = _sample_worktree_record(branch="fix/99-locked", path="C:/wt/locked")
+    orphan_rec.id = "workboard-fix-99-locked"
+
+    open_ticket = _sample_ticket("42", "Open ticket")
+
+    original = tickets_module._WORKTREE_LIB_AVAILABLE
+    try:
+        tickets_module._WORKTREE_LIB_AVAILABLE = True
+        with patch("src.api.tickets.WorktreeManager") as mock_wm_cls, \
+             patch("src.api.tickets._build_worktree_map", return_value={99: orphan_rec}), \
+             patch("src.api.tickets.load_all_projects",
+                   return_value=_make_result([project])), \
+             patch("src.api.tickets.fetch_open_board",
+                   return_value=[_make_batch_result(project,
+                                                    tickets=[open_ticket], prs=[])]):
+            mock_instance = MagicMock()
+            mock_instance.remove.side_effect = RuntimeError("locked")
+            mock_wm_cls.return_value = mock_instance
+            response = client.get("/tickets")
+    finally:
+        tickets_module._WORKTREE_LIB_AVAILABLE = original
+
+    assert response.status_code == 200
+    # The open ticket is still returned despite the deletion failure.
+    items = response.json()["tickets"]
+    assert len(items) == 1
+    assert items[0]["id"] == "42"
+
+
+def test_enrich_rows_orphan_cleanup_skipped_when_lib_unavailable() -> None:
+    """WorktreeManager.remove must never be called when _WORKTREE_LIB_AVAILABLE is False.
+
+    Regression for #78: the cleanup block is guarded by _WORKTREE_LIB_AVAILABLE
+    so it is safely skipped in environments where lib_python_worktree is absent.
+    """
+    import src.api.tickets as tickets_module
+
+    project = _sample_project()
+    open_ticket = _sample_ticket("42", "Open ticket")
+
+    original = tickets_module._WORKTREE_LIB_AVAILABLE
+    try:
+        tickets_module._WORKTREE_LIB_AVAILABLE = False
+        with patch("src.api.tickets.WorktreeManager") as mock_wm_cls:
+            mock_wm_cls.return_value = MagicMock()
+            tickets_module._enrich_rows(project, [open_ticket], [])
+    finally:
+        tickets_module._WORKTREE_LIB_AVAILABLE = original
+
+    mock_wm_cls.return_value.remove.assert_not_called()
