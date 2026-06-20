@@ -399,6 +399,60 @@ def test_branch_slug_empty_fallback() -> None:
     assert _branch_slug("") == "x"
 
 
+def test_create_worktree_uses_asyncio_to_thread() -> None:
+    """POST /worktrees calls asyncio.to_thread with manager.create and correct args.
+
+    Regression test for #86: create_worktree called WorktreeManager().create() directly
+    inside an async handler, blocking the uvicorn event loop.
+    """
+    project = _make_project()
+    record = _make_worktree_record()
+
+    mock_manager = MagicMock()
+    mock_manager.create.return_value = record
+
+    with patch("src.api.worktrees.load_all_projects", return_value=_make_projects_result([project])), \
+         patch("src.api.worktrees.WorktreeManager", return_value=mock_manager), \
+         patch("src.api.worktrees.asyncio.to_thread", return_value=record) as mock_to_thread:
+        response = client.post("/worktrees", json={
+            "project_id": "workboard",
+            "ticket_number": 42,
+            "ticket_title": "Some Feature",
+        })
+
+    assert response.status_code == 201
+    mock_to_thread.assert_called_once_with(
+        mock_manager.create,
+        "E:/development/workboard",
+        "fix/42-some-feature",
+        base="main",
+    )
+
+
+def test_delete_worktree_uses_asyncio_to_thread() -> None:
+    """DELETE /worktrees/{id} calls asyncio.to_thread with manager.remove and correct args.
+
+    Regression test for #86: delete_worktree called WorktreeManager().remove() directly
+    inside an async handler, blocking the uvicorn event loop.
+    """
+    record = _make_worktree_record(status="removed")
+
+    mock_manager = MagicMock()
+    mock_manager.remove.return_value = record
+
+    with patch("src.api.worktrees.WorktreeManager", return_value=mock_manager), \
+         patch("src.api.worktrees.asyncio.to_thread", return_value=record) as mock_to_thread:
+        response = client.delete("/worktrees/workboard-fix-42-abcd1234")
+
+    assert response.status_code == 200
+    mock_to_thread.assert_called_once_with(
+        mock_manager.remove,
+        "workboard-fix-42-abcd1234",
+        force=False,
+        kill_blocking_processes=False,
+    )
+
+
 def test_create_worktree_uses_project_default_branch() -> None:
     """POST /worktrees passes project.default_branch (not a hardcoded 'main') to WorktreeManager.create.
 

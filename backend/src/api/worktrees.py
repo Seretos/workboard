@@ -8,6 +8,7 @@ lib-python-worktree is not installed they return 503 immediately.
 """
 from __future__ import annotations
 
+import asyncio
 import re
 from dataclasses import asdict
 
@@ -71,7 +72,8 @@ async def create_worktree(req: CreateWorktreeRequest) -> dict:
     branch = f"fix/{req.ticket_number}-{_branch_slug(req.ticket_title)}"
 
     try:
-        record = WorktreeManager().create(local_path, branch, base=project.default_branch)
+        manager = WorktreeManager()
+        record = await asyncio.to_thread(manager.create, local_path, branch, base=project.default_branch)
     except HTTPException:
         raise
     except (DuplicateWorktreeError, BranchAlreadyCheckedOutError, DirtyWorktreeError) as exc:
@@ -104,7 +106,9 @@ async def delete_worktree(
         raise HTTPException(status_code=503, detail="lib-python-worktree is not available")
 
     try:
-        record = WorktreeManager().remove(
+        manager = WorktreeManager()
+        record = await asyncio.to_thread(
+            manager.remove,
             worktree_id,
             force=force,
             kill_blocking_processes=force,
