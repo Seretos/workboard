@@ -38,7 +38,6 @@
     "electron-vite": "^2.3.0",
     "jsdom": "^29.1.1",
     "typescript": "^5.5.0",
-    "vite-plugin-pwa": "^0.21.1",
     "vitest": "^2.0.0"
   },
   "build": {

@@ -1,6 +1,5 @@
 import { defineConfig } from "electron-vite";
 import react from "@vitejs/plugin-react";
-import { VitePWA } from "vite-plugin-pwa";
 import { resolve } from "path";
 
 export default defineConfig({
@@ -44,25 +43,6 @@ export default defineConfig({
     },
     plugins: [
       react(),
-      VitePWA({
-        registerType: "autoUpdate",
-        manifest: {
-          name: "Workboard",
-          short_name: "Workboard",
-          theme_color: "#0e0e10",
-          background_color: "#0e0e10",
-          icons: [
-            {
-              src: "/assets/icon.png",
-              sizes: "512x512",
-              type: "image/png",
-            },
-          ],
-        },
-        workbox: {
-          globPatterns: [],
-        },
-      }),
     ],
   },
 });

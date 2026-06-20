@@ -61,6 +61,7 @@ function makeMockClient(
 function makeMockPresenter(activeId: string | null = null): DetailPresenter {
   return {
     open: vi.fn() as (ticket: DetailTicket) => void,
+    close: vi.fn() as () => void,
     getActiveId: vi.fn().mockReturnValue(activeId) as () => string | null,
   };
 }
@@ -813,5 +814,35 @@ describe("useTicketPolling — presenter notification", () => {
     expect((presenter.open as ReturnType<typeof vi.fn>).mock.calls.length).toBe(openCallsAfterInit);
 
     act(() => { capturedCrashCb?.(null); });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// useTicketPolling — regression: poll must NOT re-open after close() (#91)
+// ---------------------------------------------------------------------------
+
+describe("useTicketPolling — no re-open after close (ticket #91 regression)", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("when getActiveId returns null (post-close), a poll containing the previously-active ticket does NOT call presenter.open", async () => {
+    // The poll hook guards on getActiveId() === null; once close() sets activeId to null,
+    // subsequent polls must not re-open the detail panel.
+    const ticket = makeTicket({ id: "closed-ticket", project_id: "proj-a", project_path: "/repos/alpha" });
+    const fetchJson = vi.fn().mockResolvedValue(makeSuccessResponse([ticket]));
+    const client = makeMockClient(fetchJson);
+
+    // Presenter with activeId === null simulates the post-close state.
+    const presenter = makeMockPresenter(null);
+
+    renderHook(() => useTicketPolling(client, presenter));
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    // The ticket IS in the poll response, but getActiveId() returns null — open must not be called.
+    expect(presenter.open).not.toHaveBeenCalled();
   });
 });
