@@ -37,7 +37,7 @@ export function TicketList({ tickets, presenter, client, onRefresh, activeTicket
     for (const ticket of groupTickets) {
       items.push(
         <TicketCard
-          key={ticket.id}
+          key={`${ticket.project_id}-${ticket.id}`}
           ticket={ticket}
           presenter={presenter}
           client={client}
