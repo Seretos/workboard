@@ -641,3 +641,63 @@ describe("TicketCard — label chips", () => {
     expect(labelsEl).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// TicketList — duplicate ticket ids across projects (ticket #79 regression)
+// ---------------------------------------------------------------------------
+
+describe("TicketList — duplicate ids across different projects", () => {
+  it("two tickets with the same numeric id but different project_id both render as distinct cards", () => {
+    // Regression for ticket #79: ticket #11 from Seretos/obsidian-memory-gatekeeper
+    // was appearing 5 times because React's key={ticket.id} silently deduplicated
+    // cards when the same numeric id appeared for multiple projects.
+    const tickets = [
+      makeTicket({ id: "11", project_id: "proj-a", project_path: "/repos/alpha" }),
+      makeTicket({ id: "11", project_id: "proj-b", project_path: "/repos/beta" }),
+    ];
+    const { presenter } = makePresenter();
+    const { container } = render(
+      <TicketList tickets={tickets} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} activeTicketId={null} />
+    );
+
+    // Both cards must appear — neither is silently dropped by React key dedup.
+    const cards = container.querySelectorAll(".ticket-card");
+    expect(cards).toHaveLength(2);
+  });
+
+  it("five tickets with the same numeric id across five different projects all render", () => {
+    // Mirrors the reported symptom: ticket #11 shown 5x means 5 projects each
+    // have a ticket #11, but without compound keys only one card would render.
+    const tickets = [
+      makeTicket({ id: "11", project_id: "proj-a", project_path: "/repos/alpha" }),
+      makeTicket({ id: "11", project_id: "proj-b", project_path: "/repos/beta" }),
+      makeTicket({ id: "11", project_id: "proj-c", project_path: "/repos/gamma" }),
+      makeTicket({ id: "11", project_id: "proj-d", project_path: "/repos/delta" }),
+      makeTicket({ id: "11", project_id: "proj-e", project_path: "/repos/epsilon" }),
+    ];
+    const { presenter } = makePresenter();
+    const { container } = render(
+      <TicketList tickets={tickets} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} activeTicketId={null} />
+    );
+
+    const cards = container.querySelectorAll(".ticket-card");
+    expect(cards).toHaveLength(5);
+  });
+
+  it("tickets with the same id across projects each appear under the correct project header", () => {
+    const tickets = [
+      makeTicket({ id: "11", project_id: "proj-a", project_path: "/repos/alpha" }),
+      makeTicket({ id: "11", project_id: "proj-b", project_path: "/repos/beta" }),
+    ];
+    const { presenter } = makePresenter();
+    const { container } = render(
+      <TicketList tickets={tickets} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} activeTicketId={null} />
+    );
+
+    // Two separate project groups should be present.
+    const headers = container.querySelectorAll(".project-group-header");
+    expect(headers).toHaveLength(2);
+    expect(headers[0].textContent).toContain("/repos/alpha");
+    expect(headers[1].textContent).toContain("/repos/beta");
+  });
+});
