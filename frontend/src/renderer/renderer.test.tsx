@@ -643,6 +643,156 @@ describe("TicketCard — label chips", () => {
 });
 
 // ---------------------------------------------------------------------------
+// TicketList — collapsible project groups (ticket #83)
+// ---------------------------------------------------------------------------
+
+describe("TicketList — collapsible groups", () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  afterEach(() => {
+    localStorage.clear();
+  });
+
+  it("click-to-collapse: clicking a header adds the collapsed modifier class and removes cards", async () => {
+    const tickets = [
+      makeTicket({ id: "1", project_id: "proj-a", project_path: "/repos/alpha" }),
+      makeTicket({ id: "2", project_id: "proj-a", project_path: "/repos/alpha" }),
+    ];
+    const { presenter } = makePresenter();
+    const { container } = render(
+      <TicketList tickets={tickets} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} activeTicketId={null} />
+    );
+
+    const header = container.querySelector(".project-group-header") as HTMLElement;
+    expect(header).not.toBeNull();
+    // Before: not collapsed, cards visible
+    expect(header.classList.contains("project-group-header--collapsed")).toBe(false);
+    expect(container.querySelectorAll(".ticket-card")).toHaveLength(2);
+
+    await userEvent.click(header);
+
+    // After: header has collapsed modifier, cards gone
+    expect(header.classList.contains("project-group-header--collapsed")).toBe(true);
+    expect(container.querySelectorAll(".ticket-card")).toHaveLength(0);
+  });
+
+  it("click-to-expand: clicking a collapsed header removes the modifier class and restores cards", async () => {
+    const tickets = [
+      makeTicket({ id: "1", project_id: "proj-a", project_path: "/repos/alpha" }),
+      makeTicket({ id: "2", project_id: "proj-a", project_path: "/repos/alpha" }),
+    ];
+    const { presenter } = makePresenter();
+    const { container } = render(
+      <TicketList tickets={tickets} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} activeTicketId={null} />
+    );
+
+    const header = container.querySelector(".project-group-header") as HTMLElement;
+    // Collapse first
+    await userEvent.click(header);
+    expect(header.classList.contains("project-group-header--collapsed")).toBe(true);
+    expect(container.querySelectorAll(".ticket-card")).toHaveLength(0);
+
+    // Now expand
+    await userEvent.click(header);
+    expect(header.classList.contains("project-group-header--collapsed")).toBe(false);
+    expect(container.querySelectorAll(".ticket-card")).toHaveLength(2);
+  });
+
+  it("only clicked group collapses: collapsing one group does not affect sibling groups", async () => {
+    const tickets = [
+      makeTicket({ id: "1", project_id: "proj-a", project_path: "/repos/alpha" }),
+      makeTicket({ id: "2", project_id: "proj-a", project_path: "/repos/alpha" }),
+      makeTicket({ id: "3", project_id: "proj-b", project_path: "/repos/beta" }),
+      makeTicket({ id: "4", project_id: "proj-b", project_path: "/repos/beta" }),
+    ];
+    const { presenter } = makePresenter();
+    const { container } = render(
+      <TicketList tickets={tickets} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} activeTicketId={null} />
+    );
+
+    const headers = container.querySelectorAll(".project-group-header") as NodeListOf<HTMLElement>;
+    expect(headers).toHaveLength(2);
+
+    // Collapse only the first group
+    await userEvent.click(headers[0]);
+
+    // First group should be collapsed
+    expect(headers[0].classList.contains("project-group-header--collapsed")).toBe(true);
+    // Second group should remain expanded
+    expect(headers[1].classList.contains("project-group-header--collapsed")).toBe(false);
+
+    // Cards from proj-b should still be visible (2 cards)
+    const cards = container.querySelectorAll(".ticket-card");
+    expect(cards).toHaveLength(2);
+  });
+
+  it("localStorage write on toggle: clicking a header calls localStorage.setItem with collapsed-projects key", async () => {
+    const tickets = [
+      makeTicket({ id: "1", project_id: "proj-a", project_path: "/repos/alpha" }),
+    ];
+    const { presenter } = makePresenter();
+    // Spy on the Storage prototype so all localStorage instances in this jsdom environment are covered.
+    const setItemSpy = vi.spyOn(Storage.prototype, "setItem");
+
+    const { container } = render(
+      <TicketList tickets={tickets} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} activeTicketId={null} />
+    );
+
+    const header = container.querySelector(".project-group-header") as HTMLElement;
+    await userEvent.click(header);
+
+    expect(setItemSpy).toHaveBeenCalledWith(
+      "collapsed-projects",
+      JSON.stringify(["proj-a"])
+    );
+
+    setItemSpy.mockRestore();
+  });
+
+  it("initialise from localStorage: pre-seeding localStorage causes group to start collapsed", () => {
+    localStorage.setItem("collapsed-projects", JSON.stringify(["proj-a"]));
+
+    const tickets = [
+      makeTicket({ id: "1", project_id: "proj-a", project_path: "/repos/alpha" }),
+      makeTicket({ id: "2", project_id: "proj-a", project_path: "/repos/alpha" }),
+    ];
+    const { presenter } = makePresenter();
+    const { container } = render(
+      <TicketList tickets={tickets} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} activeTicketId={null} />
+    );
+
+    const header = container.querySelector(".project-group-header") as HTMLElement;
+    // Group should already be collapsed on first render
+    expect(header.classList.contains("project-group-header--collapsed")).toBe(true);
+    // No ticket cards should be rendered
+    expect(container.querySelectorAll(".ticket-card")).toHaveLength(0);
+  });
+
+  it("corrupt localStorage fallback: non-JSON value causes component to mount without throwing and defaults to expanded", () => {
+    localStorage.setItem("collapsed-projects", "not-valid-json{{{");
+
+    const tickets = [
+      makeTicket({ id: "1", project_id: "proj-a", project_path: "/repos/alpha" }),
+    ];
+    const { presenter } = makePresenter();
+
+    expect(() => {
+      const { container } = render(
+        <TicketList tickets={tickets} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} activeTicketId={null} />
+      );
+      // Should default to expanded — no collapsed modifier on any header
+      const headers = container.querySelectorAll(".project-group-header");
+      expect(headers).toHaveLength(1);
+      expect(headers[0].classList.contains("project-group-header--collapsed")).toBe(false);
+      // Cards should be visible
+      expect(container.querySelectorAll(".ticket-card")).toHaveLength(1);
+    }).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // TicketList — duplicate ticket ids across projects (ticket #79 regression)
 // ---------------------------------------------------------------------------
 

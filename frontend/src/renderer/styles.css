@@ -118,10 +118,22 @@ body {
   margin-top: 12px;
   margin-bottom: 6px;
   list-style: none;
+  cursor: pointer;
 }
 
 .project-group-header:first-child {
   margin-top: 0;
+}
+
+.project-group-header--collapsed .group-label {
+  opacity: 0.6;
+}
+
+.group-collapse-icon {
+  font-size: 9px;
+  color: var(--color-text-muted);
+  flex-shrink: 0;
+  user-select: none;
 }
 
 /* Per-group ticket count badge — same visual shape as .ticket-count */
