@@ -24,7 +24,11 @@ export function TicketCard({ ticket, presenter, client, onRefresh, isActive }: P
   const className = classes.join(" ");
 
   const handleClick = () => {
-    presenter.open(ticket);
+    if (presenter.getActiveId() === ticket.id) {
+      presenter.close();
+    } else {
+      presenter.open(ticket);
+    }
   };
 
   const handleCreateWorktree = async (e: React.MouseEvent) => {

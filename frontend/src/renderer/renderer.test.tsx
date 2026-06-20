@@ -5,6 +5,8 @@ import { render, screen, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { TicketList } from "./components/TicketList";
 import { TicketCard } from "./components/TicketCard";
+import { BrowserDetailPresenter } from "./detail/BrowserDetailPresenter";
+import { ElectronDetailPresenter } from "./detail/ElectronDetailPresenter";
 import type { TicketRow } from "./types";
 import type { DetailPresenter } from "./detail/DetailPresenter";
 import type { DetailTicket } from "./types";
@@ -42,9 +44,10 @@ function makeTicket(overrides: {
   };
 }
 
-function makePresenter(): { presenter: DetailPresenter; open: ReturnType<typeof vi.fn> } {
+function makePresenter(activeId: string | null = null): { presenter: DetailPresenter; open: ReturnType<typeof vi.fn>; close: ReturnType<typeof vi.fn> } {
   const open = vi.fn() as (ticket: DetailTicket) => void;
-  return { presenter: { open, getActiveId: vi.fn().mockReturnValue(null) }, open };
+  const close = vi.fn() as () => void;
+  return { presenter: { open, close, getActiveId: vi.fn().mockReturnValue(activeId) }, open, close };
 }
 
 function makeClient(): TicketsClient {
@@ -338,6 +341,35 @@ describe("TicketCard — card click", () => {
 
     await userEvent.click(cards[1]);
     expect((open as ReturnType<typeof vi.fn>)).toHaveBeenLastCalledWith(t2);
+  });
+
+  it("second click on the already-active card calls presenter.close, NOT presenter.open", async () => {
+    const ticket = makeTicket({ id: "42", project_id: "proj-a", project_path: "/repos/alpha" });
+    // presenter reports this ticket as already active
+    const { presenter, open, close } = makePresenter("42");
+
+    const { container } = render(<TicketCard ticket={ticket} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} isActive={true} />);
+    const card = container.querySelector(".ticket-card") as HTMLElement;
+
+    await userEvent.click(card);
+
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(open).not.toHaveBeenCalled();
+  });
+
+  it("click on a different (inactive) card calls presenter.open, NOT presenter.close", async () => {
+    const ticket = makeTicket({ id: "99", project_id: "proj-a", project_path: "/repos/alpha" });
+    // presenter reports ticket "42" as active — "99" is a different ticket
+    const { presenter, open, close } = makePresenter("42");
+
+    const { container } = render(<TicketCard ticket={ticket} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} isActive={false} />);
+    const card = container.querySelector(".ticket-card") as HTMLElement;
+
+    await userEvent.click(card);
+
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(open).toHaveBeenCalledWith(ticket);
+    expect(close).not.toHaveBeenCalled();
   });
 });
 
@@ -849,5 +881,88 @@ describe("TicketList — duplicate ids across different projects", () => {
     expect(headers).toHaveLength(2);
     expect(headers[0].textContent).toContain("/repos/alpha");
     expect(headers[1].textContent).toContain("/repos/beta");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// BrowserDetailPresenter — close() (ticket #91 regression)
+// ---------------------------------------------------------------------------
+
+describe("BrowserDetailPresenter — close()", () => {
+  it("close() clears activeId to null", () => {
+    const setter = vi.fn();
+    const onActiveIdChange = vi.fn();
+    const presenter = new BrowserDetailPresenter(setter, onActiveIdChange);
+
+    const ticket: DetailTicket = { id: "10", title: "T", status: "open", url: "https://x.com", labels: [], provider: "github", project_id: "p", project_path: "/r", pull_request: null, body: undefined };
+    presenter.open(ticket);
+    expect(presenter.getActiveId()).toBe("10");
+
+    presenter.close();
+    expect(presenter.getActiveId()).toBeNull();
+  });
+
+  it("close() calls onActiveIdChange(null)", () => {
+    const setter = vi.fn();
+    const onActiveIdChange = vi.fn();
+    const presenter = new BrowserDetailPresenter(setter, onActiveIdChange);
+
+    const ticket: DetailTicket = { id: "10", title: "T", status: "open", url: "https://x.com", labels: [], provider: "github", project_id: "p", project_path: "/r", pull_request: null, body: undefined };
+    presenter.open(ticket);
+    onActiveIdChange.mockClear();
+
+    presenter.close();
+    expect(onActiveIdChange).toHaveBeenCalledOnce();
+    expect(onActiveIdChange).toHaveBeenCalledWith(null);
+  });
+
+  it("close() calls setter(null) to dismiss the modal", () => {
+    const setter = vi.fn();
+    const onActiveIdChange = vi.fn();
+    const presenter = new BrowserDetailPresenter(setter, onActiveIdChange);
+
+    const ticket: DetailTicket = { id: "10", title: "T", status: "open", url: "https://x.com", labels: [], provider: "github", project_id: "p", project_path: "/r", pull_request: null, body: undefined };
+    presenter.open(ticket);
+    setter.mockClear();
+
+    presenter.close();
+    expect(setter).toHaveBeenCalledOnce();
+    expect(setter).toHaveBeenCalledWith(null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ElectronDetailPresenter — close() (ticket #91 regression)
+// ---------------------------------------------------------------------------
+
+describe("ElectronDetailPresenter — close()", () => {
+  it("close() clears activeId to null", () => {
+    // Provide a minimal stub for window.detail so the constructor / open() does not throw.
+    (window as unknown as { detail: { openTicketDetail: ReturnType<typeof vi.fn> } }).detail = { openTicketDetail: vi.fn() };
+
+    const onActiveIdChange = vi.fn();
+    const presenter = new ElectronDetailPresenter(onActiveIdChange);
+
+    const ticket: DetailTicket = { id: "20", title: "T", status: "open", url: "https://x.com", labels: [], provider: "github", project_id: "p", project_path: "/r", pull_request: null, body: undefined };
+    presenter.open(ticket);
+    expect(presenter.getActiveId()).toBe("20");
+
+    presenter.close();
+    expect(presenter.getActiveId()).toBeNull();
+  });
+
+  it("close() calls onActiveIdChange(null)", () => {
+    (window as unknown as { detail: { openTicketDetail: ReturnType<typeof vi.fn> } }).detail = { openTicketDetail: vi.fn() };
+
+    const onActiveIdChange = vi.fn();
+    const presenter = new ElectronDetailPresenter(onActiveIdChange);
+
+    const ticket: DetailTicket = { id: "20", title: "T", status: "open", url: "https://x.com", labels: [], provider: "github", project_id: "p", project_path: "/r", pull_request: null, body: undefined };
+    presenter.open(ticket);
+    onActiveIdChange.mockClear();
+
+    presenter.close();
+    expect(onActiveIdChange).toHaveBeenCalledOnce();
+    expect(onActiveIdChange).toHaveBeenCalledWith(null);
   });
 });

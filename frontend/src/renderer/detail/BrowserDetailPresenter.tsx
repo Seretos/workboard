@@ -21,6 +21,12 @@ export class BrowserDetailPresenter implements DetailPresenter {
     this.onActiveIdChange(id);
   }
 
+  close(): void {
+    this.activeId = null;
+    this.onActiveIdChange(null);
+    this.setter(null);
+  }
+
   getActiveId(): string | null {
     return this.activeId;
   }
