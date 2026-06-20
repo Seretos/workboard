@@ -380,7 +380,7 @@ describe("TicketCard — create worktree", () => {
     expect(body.project_id).toBe("proj-a");
     expect(body.ticket_number).toBe(42);
     expect(body.ticket_title).toBe("Test ticket");
-    expect(body.base_branch).toBe("main");
+    expect(body.base_branch).toBeUndefined();
   });
 
   it("on create success onRefresh is called", async () => {
