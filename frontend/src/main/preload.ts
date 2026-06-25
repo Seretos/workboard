@@ -48,4 +48,10 @@ contextBridge.exposeInMainWorld("detail", {
   openExternal: (url: string): Promise<void> => {
     return ipcRenderer.invoke("open-external", url);
   },
+  hideTicketDetail: (): void => {
+    ipcRenderer.send("hide-ticket-detail");
+  },
+  onDetailClosed: (cb: () => void): void => {
+    ipcRenderer.on("detail-closed", () => cb());
+  },
 });

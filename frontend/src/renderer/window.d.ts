@@ -15,5 +15,7 @@ interface Window {
     openTicketDetail: (ticket: unknown) => void;
     onTicketDetailData: (cb: (ticket: unknown) => void) => void;
     openExternal: (url: string) => Promise<void>;
+    hideTicketDetail?: () => void;
+    onDetailClosed?: (cb: () => void) => void;
   };
 }

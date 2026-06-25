@@ -7,6 +7,13 @@ export class ElectronDetailPresenter implements DetailPresenter {
 
   constructor(onActiveIdChange: (id: string | null) => void = () => {}) {
     this.onActiveIdChange = onActiveIdChange;
+    // Subscribe to non-renderer-initiated closes (Alt+F4, tray hide) so that
+    // the active-card highlight is cleared whenever the window is hidden
+    // externally — not just when close() is called explicitly.
+    window.detail.onDetailClosed?.(() => {
+      this.activeId = null;
+      this.onActiveIdChange(null);
+    });
   }
 
   open(ticket: DetailTicket): void {
@@ -14,19 +21,14 @@ export class ElectronDetailPresenter implements DetailPresenter {
     this.activeId = id;
     this.onActiveIdChange(id);
     window.detail.openTicketDetail(ticket);
-    // NOTE: activeId is only cleared when another ticket is opened or when close() is
-    // called.  The Electron preload exposes no window-closed/hidden event on the detail
-    // surface, so we cannot clear activeId automatically when the detail window is
-    // dismissed.  This is a known limitation: the --active border on the card persists in
-    // Electron mode until close() is called or a different ticket is opened.  Future fix:
-    // expose an "onDetailClosed" listener in preload.ts and call onActiveIdChange(null).
   }
 
   close(): void {
     this.activeId = null;
     this.onActiveIdChange(null);
-    // NOTE: closing the separate Electron detail window over IPC is out of scope here;
-    // clearing activeId is sufficient to fix the poll re-open regression.
+    // Send the hide request to main — optional chaining keeps existing unit-test
+    // stubs working when hideTicketDetail is not stubbed.
+    window.detail.hideTicketDetail?.();
   }
 
   getActiveId(): string | null {

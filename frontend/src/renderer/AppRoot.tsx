@@ -19,13 +19,6 @@ export function AppRoot({ client }: Props): React.ReactElement {
   if (!presenterRef.current) {
     // window.detail is injected by the Electron preload; absent in browser context.
     if (typeof window !== "undefined" && (window as Window & typeof globalThis).detail) {
-      // NOTE: The Electron preload (preload.ts) exposes no close/blur/hidden event on
-      // window.detail, so there is no frontend-only way to clear activeTicketId when the
-      // separate detail window is closed.  Clearing the --active border on detail-window
-      // close is therefore a known limitation in Electron mode (it clears correctly in
-      // browser/modal mode via the onClose callback below).  To fix this properly, expose
-      // a "onDetailClosed" IPC listener in the preload and call setActiveTicketId(null)
-      // here — but that requires new IPC plumbing and is out of scope for this ticket.
       presenterRef.current = new ElectronDetailPresenter(setActiveTicketId);
     } else {
       presenterRef.current = new BrowserDetailPresenter(setSelectedTicket, setActiveTicketId);
@@ -41,7 +34,7 @@ export function AppRoot({ client }: Props): React.ReactElement {
     <>
       <App client={client} presenter={presenter} activeTicketId={activeTicketId} />
       {!isElectronDetailWindow && selectedTicket && (
-        <DetailModal ticket={selectedTicket} onClose={() => { setSelectedTicket(null); setActiveTicketId(null); }} />
+        <DetailModal ticket={selectedTicket} onClose={() => presenter.close()} />
       )}
     </>
   );
