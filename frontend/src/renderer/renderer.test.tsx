@@ -965,4 +965,75 @@ describe("ElectronDetailPresenter — close()", () => {
     expect(onActiveIdChange).toHaveBeenCalledOnce();
     expect(onActiveIdChange).toHaveBeenCalledWith(null);
   });
+
+  it("close() calls hideTicketDetail when available", () => {
+    const hideTicketDetail = vi.fn();
+    (window as unknown as {
+      detail: { openTicketDetail: ReturnType<typeof vi.fn>; hideTicketDetail: ReturnType<typeof vi.fn> };
+    }).detail = { openTicketDetail: vi.fn(), hideTicketDetail };
+
+    const presenter = new ElectronDetailPresenter(vi.fn());
+    const ticket: DetailTicket = { id: "20", title: "T", status: "open", url: "https://x.com", labels: [], provider: "github", project_id: "p", project_path: "/r", pull_request: null, body: undefined };
+    presenter.open(ticket);
+
+    presenter.close();
+    expect(hideTicketDetail).toHaveBeenCalledOnce();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ElectronDetailPresenter — onDetailClosed (ticket #93)
+// ---------------------------------------------------------------------------
+
+describe("ElectronDetailPresenter — onDetailClosed", () => {
+  it("onDetailClosed callback clears activeId", () => {
+    let capturedCallback: (() => void) | undefined;
+    (window as unknown as {
+      detail: {
+        openTicketDetail: ReturnType<typeof vi.fn>;
+        onDetailClosed: (cb: () => void) => void;
+      };
+    }).detail = {
+      openTicketDetail: vi.fn(),
+      onDetailClosed: (cb: () => void) => { capturedCallback = cb; },
+    };
+
+    const onActiveIdChange = vi.fn();
+    const presenter = new ElectronDetailPresenter(onActiveIdChange);
+
+    const ticket: DetailTicket = { id: "30", title: "T", status: "open", url: "https://x.com", labels: [], provider: "github", project_id: "p", project_path: "/r", pull_request: null, body: undefined };
+    presenter.open(ticket);
+    expect(presenter.getActiveId()).toBe("30");
+
+    // Simulate main process broadcasting "detail-closed" (Alt+F4, tray hide)
+    expect(capturedCallback).toBeDefined();
+    capturedCallback!();
+
+    expect(presenter.getActiveId()).toBeNull();
+  });
+
+  it("onDetailClosed callback calls onActiveIdChange(null)", () => {
+    let capturedCallback: (() => void) | undefined;
+    (window as unknown as {
+      detail: {
+        openTicketDetail: ReturnType<typeof vi.fn>;
+        onDetailClosed: (cb: () => void) => void;
+      };
+    }).detail = {
+      openTicketDetail: vi.fn(),
+      onDetailClosed: (cb: () => void) => { capturedCallback = cb; },
+    };
+
+    const onActiveIdChange = vi.fn();
+    const presenter = new ElectronDetailPresenter(onActiveIdChange);
+
+    const ticket: DetailTicket = { id: "30", title: "T", status: "open", url: "https://x.com", labels: [], provider: "github", project_id: "p", project_path: "/r", pull_request: null, body: undefined };
+    presenter.open(ticket);
+    onActiveIdChange.mockClear();
+
+    capturedCallback!();
+
+    expect(onActiveIdChange).toHaveBeenCalledOnce();
+    expect(onActiveIdChange).toHaveBeenCalledWith(null);
+  });
 });

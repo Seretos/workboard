@@ -180,15 +180,22 @@ ipcMain.handle("appInfo.getVersion", () => {
   return app.getVersion();
 });
 
+// Notify all renderer windows that the detail panel has been hidden by a
+// non-renderer actor (OS close, tray) so they can clear the active-card border.
+function notifyDetailClosed(): void {
+  BrowserWindow.getAllWindows().forEach((win) => {
+    if (!win.isDestroyed()) {
+      win.webContents.send("detail-closed");
+    }
+  });
+}
+
 // Show the detail window with the clicked ticket's data. The window is created
 // eagerly in bootstrap() so this handler just pushes data and un-hides it.
 //
-// Toggle-close: if the same ticket url is clicked while the window is visible,
-// hide the window (toggle off). If a different ticket is clicked while visible,
-// switch the content without hiding. url is used as the key (not numeric id)
-// because issue numbers are only unique within a single repository — the same
-// number can appear in two different projects. Tickets without a url field never
-// toggle off (null !== null is always false, so two null urls don't cancel each other).
+// Idempotent: if the window is already visible just re-send the ticket data
+// (handles poll refreshes and URL switches without toggling off). Closing is
+// done via the separate "hide-ticket-detail" IPC message.
 //
 // Guard against the first-click race: loadFile() is async, so the renderer
 // may not have registered its listener yet. When the page is still loading we
@@ -198,16 +205,11 @@ ipcMain.handle("appInfo.getVersion", () => {
 // already-registered once() listener pick it up; no second listener is added.
 ipcMain.on("open-ticket-detail", (_event, ticket) => {
   const ticketUrl: string | null = (ticket as { url?: string })?.url ?? null;
+  currentDetailTicketUrl = ticketUrl;
 
   if (detailWin && detailWin.isVisible()) {
-    if (ticketUrl !== null && ticketUrl === currentDetailTicketUrl) {
-      // Same ticket clicked again — toggle off.
-      detailWin.hide();
-      currentDetailTicketUrl = null;
-      return;
-    }
-    // Different ticket (or no url) — switch content, keep window open.
-    currentDetailTicketUrl = ticketUrl;
+    // Window already visible — push updated data. No toggle-off here; use
+    // "hide-ticket-detail" to close. This makes poll refreshes idempotent.
     detailWin.webContents.send("ticket-detail-data", ticket);
     return;
   }
@@ -216,7 +218,6 @@ ipcMain.on("open-ticket-detail", (_event, ticket) => {
   if (!detailWin) {
     detailWin = createDetailWindow();
   }
-  currentDetailTicketUrl = ticketUrl;
   if (detailWin.webContents.isLoading()) {
     // If no listener is registered yet (first click while loading), add one.
     // If one was already registered (second click while loading), just replace
@@ -235,6 +236,16 @@ ipcMain.on("open-ticket-detail", (_event, ticket) => {
   } else {
     detailWin.webContents.send("ticket-detail-data", ticket);
     detailWin.show();
+  }
+});
+
+// Hide the detail window — renderer-initiated close. No broadcast needed
+// because the renderer (ElectronDetailPresenter.close()) already clears its
+// own activeId synchronously before sending this message.
+ipcMain.on("hide-ticket-detail", () => {
+  if (detailWin && detailWin.isVisible()) {
+    detailWin.hide();
+    currentDetailTicketUrl = null;
   }
 });
 
@@ -315,14 +326,15 @@ export function createDetailWindow(): BrowserWindow {
 
   // Mirror the panel's close behaviour: hide instead of destroy so the tray
   // keeps the app alive. Let it through only when a real quit is in progress.
-  // Clear the toggle key so that reopening the same ticket shows the window
-  // rather than silently no-oping (stale key would make the next open-ticket-detail
-  // call think the window is already showing the same ticket and toggle it off).
+  // Clear the toggle key and broadcast "detail-closed" so the main-panel renderer
+  // can clear its active-card highlight (this is a non-renderer-initiated hide —
+  // e.g. Alt+F4 — so the renderer cannot clear itself synchronously).
   win.on("close", (event) => {
     if (!isQuitting) {
       event.preventDefault();
       win.hide();
       currentDetailTicketUrl = null;
+      notifyDetailClosed();
     }
   });
 
@@ -363,12 +375,13 @@ export function createTray(
     if (win.isVisible()) {
       win.hide();
       // Also hide the detail window so it doesn't stay stranded on screen.
-      // Clear the toggle key at the same time — the detail window is now hidden
-      // outside the IPC handler, so the next card click must always show it.
+      // Clear the toggle key and broadcast "detail-closed" so the renderer can
+      // clear the active-card highlight (tray is a non-renderer-initiated hide).
       const dw = getDetailWin?.();
       if (dw && dw.isVisible()) {
         dw.hide();
         currentDetailTicketUrl = null;
+        notifyDetailClosed();
       }
     } else {
       win.show();
