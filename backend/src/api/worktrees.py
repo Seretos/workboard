@@ -64,7 +64,11 @@ async def create_worktree(req: CreateWorktreeRequest) -> dict:
     if not _WORKTREE_LIB_AVAILABLE:
         raise HTTPException(status_code=503, detail="lib-python-worktree is not available")
 
-    result = load_all_projects()
+    # Run off the event loop — see the matching comment in tickets.py's
+    # /tickets handler. Otherwise a slow load_all_projects() call here
+    # blocks every other in-flight request (including /tickets polls) for
+    # its full duration.
+    result = await asyncio.to_thread(load_all_projects)
     project = next((p for p in result.projects if p.id == req.project_id), None)
     if project is None:
         raise HTTPException(status_code=404, detail=f"Project '{req.project_id}' not found")
