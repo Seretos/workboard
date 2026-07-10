@@ -4,6 +4,10 @@
   "description": "A pinnable desktop board that surfaces your assigned tickets and spins up per-ticket worktrees, virtual desktops, and dev environments to parallelize agent-driven work.",
   "author": "Arne von Appen",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Seretos/workboard.git"
+  },
   "main": "out/main/main.js",
   "scripts": {
     "build": "electron-vite build",
