@@ -1336,8 +1336,13 @@ def test_enrich_rows_removes_orphaned_worktree() -> None:
         # Patch _build_worktree_map to return a map with the orphaned record
         # already keyed by ticket number, bypassing the repo_root filter so
         # the test focuses purely on the orphan-deletion logic.
+        # _spawn_background is patched to run its target inline (synchronously)
+        # instead of on a real thread — cleanup is fire-and-forget in
+        # production (see _spawn_background's docstring) but must be
+        # deterministic here.
         with patch("src.api.tickets.WorktreeManager") as mock_wm_cls, \
-             patch("src.api.tickets._build_worktree_map", return_value={99: orphan_rec}):
+             patch("src.api.tickets._build_worktree_map", return_value={99: orphan_rec}), \
+             patch("src.api.tickets._spawn_background", side_effect=lambda fn, *a: fn(*a)):
             mock_wm_cls.return_value = MagicMock()
             tickets_module._enrich_rows(project, [open_ticket], [])
     finally:

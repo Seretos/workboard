@@ -15,13 +15,36 @@ contextBridge.exposeInMainWorld("appInfo", {
 // getters live on `Response.prototype` and are dropped, leaving the
 // renderer with `undefined`). So we read the body here and hand back a
 // flat `{ ok, status, data }` object the renderer can use directly.
+//
+// `timeoutMs`, when passed, aborts the request instead of letting it hang
+// forever — a backend process that's alive but wedged (not crashed, so no
+// `backend-crashed` event fires) would otherwise leave the caller waiting
+// on an unresolved promise indefinitely. Omit it for calls that are
+// expected to legitimately run long (e.g. worktree creation).
 contextBridge.exposeInMainWorld("backend", {
   fetchJson: async (
     path: string,
-    init?: RequestInit
+    init?: RequestInit,
+    timeoutMs?: number
   ): Promise<{ ok: boolean; status: number; data: unknown }> => {
     const base: string = await ipcRenderer.invoke("backend-url");
-    const res = await fetch(`${base}${path}`, init);
+    const controller = timeoutMs !== undefined ? new AbortController() : null;
+    const timeoutId =
+      controller !== null ? setTimeout(() => controller.abort(), timeoutMs) : null;
+    let res: Response;
+    try {
+      res = await fetch(`${base}${path}`, {
+        ...init,
+        signal: controller?.signal ?? init?.signal,
+      });
+    } catch (err) {
+      if (err instanceof Error && err.name === "AbortError") {
+        throw new Error(`Backend antwortet nicht (Zeitüberschreitung nach ${(timeoutMs ?? 0) / 1000}s)`);
+      }
+      throw err;
+    } finally {
+      if (timeoutId !== null) clearTimeout(timeoutId);
+    }
     let data: unknown = null;
     try {
       data = await res.json();
