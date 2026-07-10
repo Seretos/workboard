@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import threading
 from dataclasses import asdict
 
 from fastapi import APIRouter
@@ -138,6 +139,35 @@ def _build_worktree_map(local_path: str | None) -> "dict[int, WorktreeRecord]":
     return wt_map
 
 
+def _spawn_background(target, *args) -> None:
+    """Run *target(*args)* off the request path.
+
+    Indirection point (rather than calling ``threading.Thread`` directly
+    from ``_enrich_rows``) so tests can make cleanup synchronous and
+    deterministic by patching this one function.
+    """
+    threading.Thread(target=target, args=args, daemon=True).start()
+
+
+def _remove_orphaned_worktree(worktree_id: str) -> None:
+    """Best-effort worktree teardown, run off the request path.
+
+    ``WorktreeManager.remove(..., kill_blocking_processes=True)`` has its own
+    multi-second timeouts and, on failure, leaves the record in place — so a
+    worktree that can't be cleanly removed (e.g. a lingering dev-server
+    process holding a file lock) would otherwise retry inline on *every*
+    subsequent ``/tickets`` poll, compounding into a multi-minute hang that
+    the renderer has no way to distinguish from a dead backend. Fire-and-
+    forget keeps ticket loading fast regardless of how slow or flaky
+    cleanup is; a stuck orphan just gets retried on the next poll, off
+    thread.
+    """
+    try:
+        WorktreeManager().remove(worktree_id, force=True, kill_blocking_processes=True)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("failed to remove orphaned worktree %s: %s", worktree_id, exc)
+
+
 def _enrich_rows(
     project: ProjectConfig,
     tickets: list,
@@ -155,10 +185,7 @@ def _enrich_rows(
         open_ticket_nums = {int(t.id) for t in tickets if t.id.isdigit()}
         for ticket_num, rec in list(wt_map.items()):
             if ticket_num not in open_ticket_nums:
-                try:
-                    WorktreeManager().remove(rec.id, force=True, kill_blocking_processes=True)
-                except Exception as exc:  # noqa: BLE001
-                    log.warning("failed to remove orphaned worktree %s: %s", rec.id, exc)
+                _spawn_background(_remove_orphaned_worktree, rec.id)
                 del wt_map[ticket_num]
 
     rows: list[dict] = []

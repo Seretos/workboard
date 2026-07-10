@@ -5,6 +5,13 @@ import type { TicketRow, TicketsResponse } from "../types";
 
 export const POLL_INTERVAL_MS = 300_000;
 
+// Bounds a single /tickets round-trip. Generous enough to cover the
+// backend's own per-provider timeouts (30s, run concurrently) plus
+// overhead, while still guaranteeing the UI surfaces an error instead of
+// hanging on "Lädt Tickets…" forever if the backend process is alive but
+// unresponsive.
+const FETCH_TIMEOUT_MS = 60_000;
+
 export interface PollingState {
   tickets: TicketRow[];
   status: string;
@@ -71,7 +78,7 @@ export function useTicketPolling(
 
       let data: TicketsResponse;
       try {
-        const response = await client.fetchJson("/tickets");
+        const response = await client.fetchJson("/tickets", undefined, FETCH_TIMEOUT_MS);
         if (!response.ok) {
           throw new Error(`Backend antwortete mit HTTP ${response.status}`);
         }
