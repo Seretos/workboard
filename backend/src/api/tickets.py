@@ -26,6 +26,7 @@ import asyncio
 import logging
 import re
 import threading
+import time
 from dataclasses import asdict
 
 from fastapi import APIRouter
@@ -363,7 +364,9 @@ async def tickets() -> dict:
     rate-limited, ``poll_errors.rate_limited`` is ``true`` and the
     ``tickets`` array contains only the rows from projects that did succeed.
     """
+    started = time.monotonic()
     result = load_all_projects()
+    log.info("loaded %d project(s) in %.1fs", len(result.projects), time.monotonic() - started)
 
     github_projects = [p for p in result.projects if p.provider == "github"]
     other_projects = [p for p in result.projects if p.provider != "github"]
@@ -374,6 +377,7 @@ async def tickets() -> dict:
         asyncio.to_thread(_fetch_github_batch, github_projects),
         *(asyncio.to_thread(_fetch_project_tickets, p) for p in other_projects),
     )
+    log.info("/tickets fetch completed in %.1fs total", time.monotonic() - started)
 
     # Flatten: first element is the batch result list, rest are per-project lists.
     per_project = list(gathered)

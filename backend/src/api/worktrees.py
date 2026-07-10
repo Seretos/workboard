@@ -9,13 +9,17 @@ lib-python-worktree is not installed they return 503 immediately.
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
+import time
 from dataclasses import asdict
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from src.providers import load_all_projects
+
+log = logging.getLogger("workboard.worktrees")
 
 try:
     from lib_python_worktree import (
@@ -71,16 +75,22 @@ async def create_worktree(req: CreateWorktreeRequest) -> dict:
 
     branch = f"fix/{req.ticket_number}-{_branch_slug(req.ticket_title)}"
 
+    log.info("creating worktree: project=%s branch=%s base=%s",
+              req.project_id, branch, project.default_branch)
+    started = time.monotonic()
     try:
         manager = WorktreeManager()
         record = await asyncio.to_thread(manager.create, local_path, branch, base=project.default_branch)
     except HTTPException:
         raise
     except (DuplicateWorktreeError, BranchAlreadyCheckedOutError, DirtyWorktreeError) as exc:
+        log.warning("worktree create rejected after %.1fs: %s", time.monotonic() - started, exc)
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except (BranchNotFoundError, InvalidRepoError, WorktreeError) as exc:
+        log.warning("worktree create failed after %.1fs: %s", time.monotonic() - started, exc)
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except SetupFailedError as exc:
+        log.warning("worktree setup step failed after %.1fs: %s", time.monotonic() - started, exc)
         raise HTTPException(
             status_code=422,
             detail=(
@@ -91,8 +101,10 @@ async def create_worktree(req: CreateWorktreeRequest) -> dict:
             ),
         ) from exc
     except Exception as exc:
+        log.warning("worktree create failed unexpectedly after %.1fs: %s", time.monotonic() - started, exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
+    log.info("worktree created in %.1fs: id=%s path=%s", time.monotonic() - started, record.id, record.path)
     return asdict(record)
 
 
@@ -105,6 +117,8 @@ async def delete_worktree(
     if not _WORKTREE_LIB_AVAILABLE:
         raise HTTPException(status_code=503, detail="lib-python-worktree is not available")
 
+    log.info("removing worktree: id=%s force=%s", worktree_id, force)
+    started = time.monotonic()
     try:
         manager = WorktreeManager()
         record = await asyncio.to_thread(
@@ -118,10 +132,14 @@ async def delete_worktree(
     except WorktreeNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except (WorktreeDirLockedError, ProcessAlreadyRunningError, DirtyWorktreeError) as exc:
+        log.warning("worktree remove rejected after %.1fs: %s", time.monotonic() - started, exc)
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except WorktreeError as exc:
+        log.warning("worktree remove failed after %.1fs: %s", time.monotonic() - started, exc)
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
+        log.warning("worktree remove failed unexpectedly after %.1fs: %s", time.monotonic() - started, exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
+    log.info("worktree removed in %.1fs: id=%s", time.monotonic() - started, worktree_id)
     return asdict(record)
