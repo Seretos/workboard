@@ -11,6 +11,14 @@ interface Props {
   isActive: boolean;
 }
 
+// Worktree create/delete legitimately run long (git checkout + setup steps
+// like npm install), so this is generous — but without any bound at all, a
+// backend that's wedged (or a request that never gets a response for any
+// reason) leaves isCreating/isDeleting stuck true forever: the button stays
+// disabled on "Erstelle…"/"Lösche…" with no way to recover short of
+// restarting the app. This is a safety net, not an expected duration.
+const WORKTREE_OP_TIMEOUT_MS = 600_000;
+
 export function TicketCard({ ticket, presenter, client, onRefresh, isActive }: Props): React.ReactElement {
   const [isCreating, setIsCreating] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
@@ -36,15 +44,19 @@ export function TicketCard({ ticket, presenter, client, onRefresh, isActive }: P
     setIsCreating(true);
     setWorktreeError(null);
     try {
-      const response = await client.fetchJson("/worktrees", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          project_id: ticket.project_id,
-          ticket_number: parseInt(ticket.id, 10) || 0,
-          ticket_title: ticket.title,
-        }),
-      });
+      const response = await client.fetchJson(
+        "/worktrees",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            project_id: ticket.project_id,
+            ticket_number: parseInt(ticket.id, 10) || 0,
+            ticket_title: ticket.title,
+          }),
+        },
+        WORKTREE_OP_TIMEOUT_MS
+      );
       if (!response.ok) {
         const detail = (response.data as { detail?: string } | null)?.detail;
         setWorktreeError(detail ?? `Fehler: HTTP ${response.status}`);
@@ -67,7 +79,8 @@ export function TicketCard({ ticket, presenter, client, onRefresh, isActive }: P
     try {
       const response = await client.fetchJson(
         `/worktrees/${ticket.worktree.id}?force=${forceDelete}`,
-        { method: "DELETE" }
+        { method: "DELETE" },
+        WORKTREE_OP_TIMEOUT_MS
       );
       if (!response.ok) {
         const detail = (response.data as { detail?: string } | null)?.detail;

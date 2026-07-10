@@ -405,7 +405,8 @@ describe("TicketCard — create worktree", () => {
       expect.objectContaining({
         method: "POST",
         body: expect.stringContaining('"project_id":"proj-a"'),
-      })
+      }),
+      expect.any(Number)
     );
     const callInit = fetchJson.mock.calls[0][1] as RequestInit;
     const body = JSON.parse(callInit.body as string);
@@ -475,7 +476,8 @@ describe("TicketCard — delete worktree", () => {
 
     expect(fetchJson).toHaveBeenCalledWith(
       expect.stringContaining("/worktrees/workboard-fix-42-abcd1234"),
-      expect.objectContaining({ method: "DELETE" })
+      expect.objectContaining({ method: "DELETE" }),
+      expect.any(Number)
     );
   });
 

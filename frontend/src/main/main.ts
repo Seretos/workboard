@@ -28,6 +28,38 @@ let currentDetailTicketUrl: string | null = null;
 let isQuitting = false;
 
 // ---------------------------------------------------------------------------
+// File logging — there was previously no persistent log output anywhere: a
+// packaged/tray-launched app has no attached console, so console.log/error
+// (including the relayed backend stderr) vanished into nothing. That made a
+// stuck poll or worktree operation undiagnosable after the fact. This mirrors
+// console output into a capped file under userData/logs so the next hang
+// leaves evidence on disk.
+// ---------------------------------------------------------------------------
+const LOG_MAX_BYTES = 5 * 1024 * 1024;
+let logStream: fs.WriteStream | null = null;
+
+function initLogFile(): void {
+  try {
+    const logDir = path.join(app.getPath("userData"), "logs");
+    fs.mkdirSync(logDir, { recursive: true });
+    const logPath = path.join(logDir, "main.log");
+    if (fs.existsSync(logPath) && fs.statSync(logPath).size > LOG_MAX_BYTES) {
+      fs.renameSync(logPath, path.join(logDir, "main.log.1"));
+    }
+    logStream = fs.createWriteStream(logPath, { flags: "a" });
+    logLine(`--- Workboard started (pid ${process.pid}, version ${app.getVersion()}) ---`);
+  } catch (err) {
+    console.error("failed to open log file:", err);
+  }
+}
+
+function logLine(message: string): void {
+  const line = `[${new Date().toISOString()}] ${message}`;
+  console.log(line);
+  logStream?.write(line + "\n");
+}
+
+// ---------------------------------------------------------------------------
 // resolveIconPath — pure, no side effects, fully testable.
 // ---------------------------------------------------------------------------
 export function resolveIconPath(): string {
@@ -154,6 +186,7 @@ export function spawnBackend(): Promise<number> {
         reject(new Error(`Backend exited with code ${code} before handshake`));
       } else {
         // Post-startup crash: broadcast to all renderer windows
+        logLine(`Backend exited unexpectedly with code ${code}`);
         BrowserWindow.getAllWindows().forEach((win) => {
           if (!win.isDestroyed()) {
             win.webContents.send("backend-crashed", code);
@@ -163,8 +196,9 @@ export function spawnBackend(): Promise<number> {
     });
 
     child.stderr?.on("data", (data: Buffer) => {
-      // Log stderr for debugging but don't fail on it
-      console.error("[backend stderr]", data.toString());
+      // Relay stderr (includes the backend's own INFO/WARNING log lines) into
+      // the persistent log file — don't fail on it.
+      logLine(`[backend stderr] ${data.toString().trimEnd()}`);
     });
   });
 }
@@ -400,14 +434,14 @@ export function createTray(
 // Electron (vitest does not have a real app.whenReady).
 // ---------------------------------------------------------------------------
 async function bootstrap(): Promise<void> {
+  initLogFile();
   try {
     backendPort = await spawnBackend();
-    console.log(`Backend running on port ${backendPort}`);
+    logLine(`Backend running on port ${backendPort}`);
   } catch (err) {
-    dialog.showErrorBox(
-      "Backend failed to start",
-      String(err instanceof Error ? err.message : err)
-    );
+    const message = String(err instanceof Error ? err.message : err);
+    logLine(`Backend failed to start: ${message}`);
+    dialog.showErrorBox("Backend failed to start", message);
     app.quit();
     return;
   }

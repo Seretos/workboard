@@ -10,12 +10,26 @@ Run in development:
 Packaged binary: PyInstaller calls this module directly.
 """
 
+import logging
+import sys
+
 import uvicorn
 from fastapi import FastAPI
 
 from src.api.health import router as health_router
 from src.api.tickets import router as tickets_router
 from src.api.worktrees import router as worktrees_router
+
+# INFO-level, timestamped logging to stderr. The Electron main process relays
+# every backend stderr line into a persistent log file (see main.ts), so this
+# is the only logging configuration needed to get diagnosable, on-disk output
+# for hangs/slow requests — there was previously no way to see what a stuck
+# poll or worktree operation was doing after the fact.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    stream=sys.stderr,
+)
 
 app = FastAPI(title="Workboard Backend")
 app.include_router(health_router)
