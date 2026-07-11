@@ -161,6 +161,21 @@ def _spawn_background(target, *args) -> None:
 _orphan_cleanup_inflight: set[str] = set()
 _orphan_cleanup_lock = threading.Lock()
 
+# `kill_blocking_processes=True` (below) makes lib-python-worktree scan
+# *every* process on the machine for one holding a lock on the worktree
+# directory (on Windows this includes an NtQuerySystemInformation(
+# SystemExtendedHandleInformation) handle-table walk) before giving up.
+# That is worth paying a few times for a worktree whose dev server is mid-
+# shutdown, but some orphans never come unstuck (their lock is held by
+# something the scan can't find — 0 processes killed, every time) and were
+# previously retried on *every* poll forever, i.e. one expensive
+# whole-machine scan every ~5 minutes indefinitely. Give up after
+# `_MAX_ORPHAN_CLEANUP_ATTEMPTS` consecutive failures so a permanently-
+# stuck orphan stops costing anything; it just needs manual removal.
+_MAX_ORPHAN_CLEANUP_ATTEMPTS = 3
+_orphan_cleanup_failure_counts: dict[str, int] = {}
+_orphan_cleanup_abandoned: set[str] = set()
+
 
 def _remove_orphaned_worktree(worktree_id: str) -> None:
     """Best-effort worktree teardown, run off the request path.
@@ -173,12 +188,33 @@ def _remove_orphaned_worktree(worktree_id: str) -> None:
     the renderer has no way to distinguish from a dead backend. Fire-and-
     forget keeps ticket loading fast regardless of how slow or flaky
     cleanup is; a stuck orphan just gets retried on the next poll, off
-    thread.
+    thread — up to `_MAX_ORPHAN_CLEANUP_ATTEMPTS` times, after which it is
+    abandoned (see the module-level comment on `_MAX_ORPHAN_CLEANUP_ATTEMPTS`).
     """
     try:
         WorktreeManager().remove(worktree_id, force=True, kill_blocking_processes=True)
     except Exception as exc:  # noqa: BLE001
-        log.warning("failed to remove orphaned worktree %s: %s", worktree_id, exc)
+        with _orphan_cleanup_lock:
+            attempts = _orphan_cleanup_failure_counts.get(worktree_id, 0) + 1
+            _orphan_cleanup_failure_counts[worktree_id] = attempts
+            gave_up_now = attempts >= _MAX_ORPHAN_CLEANUP_ATTEMPTS
+            if gave_up_now:
+                _orphan_cleanup_abandoned.add(worktree_id)
+        if gave_up_now:
+            log.warning(
+                "giving up on orphaned worktree %s after %d failed removal "
+                "attempts (last error: %s) — remove it manually",
+                worktree_id, attempts, exc,
+            )
+        else:
+            log.warning(
+                "failed to remove orphaned worktree %s (attempt %d/%d): %s",
+                worktree_id, attempts, _MAX_ORPHAN_CLEANUP_ATTEMPTS, exc,
+            )
+    else:
+        with _orphan_cleanup_lock:
+            _orphan_cleanup_failure_counts.pop(worktree_id, None)
+            _orphan_cleanup_abandoned.discard(worktree_id)
     finally:
         with _orphan_cleanup_lock:
             _orphan_cleanup_inflight.discard(worktree_id)
@@ -203,9 +239,11 @@ def _enrich_rows(
             if ticket_num not in open_ticket_nums:
                 with _orphan_cleanup_lock:
                     already_running = rec.id in _orphan_cleanup_inflight
-                    if not already_running:
+                    abandoned = rec.id in _orphan_cleanup_abandoned
+                    should_spawn = not already_running and not abandoned
+                    if should_spawn:
                         _orphan_cleanup_inflight.add(rec.id)
-                if not already_running:
+                if should_spawn:
                     _spawn_background(_remove_orphaned_worktree, rec.id)
                 del wt_map[ticket_num]
 
