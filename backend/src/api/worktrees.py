@@ -43,6 +43,19 @@ router = APIRouter()
 
 _NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
 
+# Diagnosed 2026-07-11: a worktree's setup step (or the underlying git
+# operation) can wedge indefinitely — lib-python-worktree's SetupRunner
+# invokes subprocess.run() with no timeout of its own — and manager.create()/
+# .remove() run via asyncio.to_thread() have never had one either. A wedged
+# call previously ran forever: the only thing that ever gave up was the
+# frontend's 10-minute AbortController (TicketCard.tsx), which just stops
+# waiting — it does not cancel the backend request, so the stuck thread (and
+# whatever subprocess it's blocked on) kept running, and the whole backend
+# process was later observed to crash under the resulting resource pressure.
+# Set a hair below the frontend's 600s so the backend's own clean timeout
+# error wins the race and is what actually gets logged and returned.
+_WORKTREE_OP_TIMEOUT_S = 570
+
 
 def _branch_slug(title: str) -> str:
     """Lower-case, collapse non-alphanumeric runs to '-', strip edges, truncate."""
@@ -84,9 +97,28 @@ async def create_worktree(req: CreateWorktreeRequest) -> dict:
     started = time.monotonic()
     try:
         manager = WorktreeManager()
-        record = await asyncio.to_thread(manager.create, local_path, branch, base=project.default_branch)
+        record = await asyncio.wait_for(
+            asyncio.to_thread(manager.create, local_path, branch, base=project.default_branch),
+            timeout=_WORKTREE_OP_TIMEOUT_S,
+        )
     except HTTPException:
         raise
+    except asyncio.TimeoutError as exc:
+        log.warning(
+            "worktree create timed out after %.1fs (limit %ds): project=%s branch=%s — "
+            "backend thread keeps running in the background and cannot be cancelled; "
+            "check the worktree's setup log under ~/.agent-worktree/logs/",
+            time.monotonic() - started, _WORKTREE_OP_TIMEOUT_S, req.project_id, branch,
+        )
+        raise HTTPException(
+            status_code=504,
+            detail=(
+                f"Worktree creation for branch '{branch}' timed out after "
+                f"{_WORKTREE_OP_TIMEOUT_S}s. The underlying operation may still be "
+                f"running in the background — check the setup log under "
+                f"~/.agent-worktree/logs/ before retrying."
+            ),
+        ) from exc
     except (DuplicateWorktreeError, BranchAlreadyCheckedOutError, DirtyWorktreeError) as exc:
         log.warning("worktree create rejected after %.1fs: %s", time.monotonic() - started, exc)
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -125,14 +157,30 @@ async def delete_worktree(
     started = time.monotonic()
     try:
         manager = WorktreeManager()
-        record = await asyncio.to_thread(
-            manager.remove,
-            worktree_id,
-            force=force,
-            kill_blocking_processes=force,
+        record = await asyncio.wait_for(
+            asyncio.to_thread(
+                manager.remove,
+                worktree_id,
+                force=force,
+                kill_blocking_processes=force,
+            ),
+            timeout=_WORKTREE_OP_TIMEOUT_S,
         )
     except HTTPException:
         raise
+    except asyncio.TimeoutError as exc:
+        log.warning(
+            "worktree remove timed out after %.1fs (limit %ds): id=%s",
+            time.monotonic() - started, _WORKTREE_OP_TIMEOUT_S, worktree_id,
+        )
+        raise HTTPException(
+            status_code=504,
+            detail=(
+                f"Removing worktree '{worktree_id}' timed out after "
+                f"{_WORKTREE_OP_TIMEOUT_S}s. The underlying operation may still be "
+                f"running in the background — retry once it settles."
+            ),
+        ) from exc
     except WorktreeNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except (WorktreeDirLockedError, ProcessAlreadyRunningError, DirtyWorktreeError) as exc:

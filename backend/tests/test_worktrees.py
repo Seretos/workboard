@@ -7,7 +7,7 @@ and load_all_projects so no filesystem or git access happens.
 from __future__ import annotations
 
 import dataclasses
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -222,6 +222,34 @@ def test_create_worktree_dirty() -> None:
     assert response.status_code == 409
 
 
+def test_create_worktree_timeout_returns_504() -> None:
+    """POST /worktrees returns 504 when manager.create() exceeds the timeout.
+
+    Regression test: a wedged setup step (or git op) previously ran forever —
+    the backend request itself never resolved, only the frontend's own
+    10-minute AbortController eventually gave up client-side. manager.create
+    runs a real time.sleep() in a real thread (via the unmocked asyncio.to_thread)
+    so this exercises the actual asyncio.wait_for timeout path, not a mock.
+    """
+    import time as time_module
+
+    project = _make_project()
+    mock_manager = MagicMock()
+    mock_manager.create.side_effect = lambda *a, **k: time_module.sleep(0.05)
+
+    with patch("src.api.worktrees.load_all_projects", return_value=_make_projects_result([project])), \
+         patch("src.api.worktrees.WorktreeManager", return_value=mock_manager), \
+         patch("src.api.worktrees._WORKTREE_OP_TIMEOUT_S", 0.01):
+        response = client.post("/worktrees", json={
+            "project_id": "workboard",
+            "ticket_number": 42,
+            "ticket_title": "Test",
+        })
+
+    assert response.status_code == 504
+    assert "timed out" in response.json()["detail"]
+
+
 # ---------------------------------------------------------------------------
 # DELETE /worktrees/{worktree_id}
 # ---------------------------------------------------------------------------
@@ -289,6 +317,21 @@ def test_delete_worktree_force_passes_kill_flag() -> None:
         force=True,
         kill_blocking_processes=True,
     )
+
+
+def test_delete_worktree_timeout_returns_504() -> None:
+    """DELETE /worktrees/{id} returns 504 when manager.remove() exceeds the timeout."""
+    import time as time_module
+
+    mock_manager = MagicMock()
+    mock_manager.remove.side_effect = lambda *a, **k: time_module.sleep(0.05)
+
+    with patch("src.api.worktrees.WorktreeManager", return_value=mock_manager), \
+         patch("src.api.worktrees._WORKTREE_OP_TIMEOUT_S", 0.01):
+        response = client.delete("/worktrees/some-id")
+
+    assert response.status_code == 504
+    assert "timed out" in response.json()["detail"]
 
 
 def test_delete_worktree_lib_unavailable() -> None:
@@ -424,7 +467,7 @@ def test_create_worktree_uses_asyncio_to_thread() -> None:
 
     with patch("src.api.worktrees.load_all_projects", return_value=_make_projects_result([project])), \
          patch("src.api.worktrees.WorktreeManager", return_value=mock_manager), \
-         patch("src.api.worktrees.asyncio.to_thread", side_effect=to_thread_side_effect) as mock_to_thread:
+         patch("src.api.worktrees.asyncio.to_thread", new_callable=AsyncMock, side_effect=to_thread_side_effect) as mock_to_thread:
         response = client.post("/worktrees", json={
             "project_id": "workboard",
             "ticket_number": 42,
@@ -452,7 +495,7 @@ def test_delete_worktree_uses_asyncio_to_thread() -> None:
     mock_manager.remove.return_value = record
 
     with patch("src.api.worktrees.WorktreeManager", return_value=mock_manager), \
-         patch("src.api.worktrees.asyncio.to_thread", return_value=record) as mock_to_thread:
+         patch("src.api.worktrees.asyncio.to_thread", new_callable=AsyncMock, return_value=record) as mock_to_thread:
         response = client.delete("/worktrees/workboard-fix-42-abcd1234")
 
     assert response.status_code == 200
