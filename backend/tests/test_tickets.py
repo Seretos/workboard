@@ -1440,3 +1440,69 @@ def test_enrich_rows_orphan_cleanup_skipped_when_lib_unavailable() -> None:
         tickets_module._WORKTREE_LIB_AVAILABLE = original
 
     mock_wm_cls.return_value.remove.assert_not_called()
+
+
+def test_enrich_rows_orphan_cleanup_dedups_inflight_removal() -> None:
+    """A second poll for the same still-orphaned worktree must not spawn a
+    second cleanup thread while the first is still in flight.
+
+    Regression: an orphan that repeatedly fails to remove (e.g. a locked
+    directory) used to spawn a fresh background thread on every /tickets
+    poll indefinitely, accumulating live threads and WorktreeManager.remove()
+    calls for as long as the app ran.
+    """
+    import src.api.tickets as tickets_module
+
+    project = _sample_project()
+    orphan_rec = _sample_worktree_record(branch="fix/99-stuck", path="C:/wt/stuck")
+    orphan_rec.id = "workboard-fix-99-stuck-dedup-test"
+
+    open_ticket = _sample_ticket("42", "Open ticket")
+
+    original = tickets_module._WORKTREE_LIB_AVAILABLE
+    # Simulate a cleanup for this exact worktree already running from an
+    # earlier poll.
+    tickets_module._orphan_cleanup_inflight.add(orphan_rec.id)
+    try:
+        tickets_module._WORKTREE_LIB_AVAILABLE = True
+        with patch("src.api.tickets._build_worktree_map", return_value={99: orphan_rec}), \
+             patch("src.api.tickets._spawn_background") as mock_spawn:
+            tickets_module._enrich_rows(project, [open_ticket], [])
+        mock_spawn.assert_not_called()
+    finally:
+        tickets_module._WORKTREE_LIB_AVAILABLE = original
+        tickets_module._orphan_cleanup_inflight.discard(orphan_rec.id)
+
+
+def test_enrich_rows_orphan_cleanup_retries_after_completion() -> None:
+    """Once a cleanup attempt finishes, the in-flight guard is released so a
+    later poll for the same still-orphaned worktree retries normally."""
+    import src.api.tickets as tickets_module
+
+    project = _sample_project()
+    orphan_rec = _sample_worktree_record(branch="fix/99-retry", path="C:/wt/retry")
+    orphan_rec.id = "workboard-fix-99-retry-dedup-test"
+
+    open_ticket = _sample_ticket("42", "Open ticket")
+
+    original = tickets_module._WORKTREE_LIB_AVAILABLE
+    try:
+        tickets_module._WORKTREE_LIB_AVAILABLE = True
+        # side_effect (not return_value) so each call gets a fresh dict —
+        # _enrich_rows deletes the orphan entry from whatever map it's
+        # handed, and a shared dict would come back pre-emptied on the
+        # second call, hiding the very retry behaviour under test.
+        with patch("src.api.tickets.WorktreeManager") as mock_wm_cls, \
+             patch("src.api.tickets._build_worktree_map", side_effect=lambda *a, **kw: {99: orphan_rec}), \
+             patch("src.api.tickets._spawn_background", side_effect=lambda fn, *a: fn(*a)):
+            mock_wm_cls.return_value = MagicMock()
+            tickets_module._enrich_rows(project, [open_ticket], [])
+            assert orphan_rec.id not in tickets_module._orphan_cleanup_inflight
+
+            # A second, later poll for the same still-orphaned worktree
+            # (removal keeps failing) must retry, not stay deduped forever.
+            tickets_module._enrich_rows(project, [open_ticket], [])
+        assert mock_wm_cls.return_value.remove.call_count == 2
+    finally:
+        tickets_module._WORKTREE_LIB_AVAILABLE = original
+        tickets_module._orphan_cleanup_inflight.discard(orphan_rec.id)

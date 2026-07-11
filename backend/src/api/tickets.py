@@ -150,6 +150,18 @@ def _spawn_background(target, *args) -> None:
     threading.Thread(target=target, args=args, daemon=True).start()
 
 
+# Worktree IDs currently being removed by a background cleanup thread.
+# Guards against an orphan that repeatedly fails to remove (e.g. a locked
+# directory) spawning a fresh thread — running its own multi-second
+# WorktreeManager.remove(..., kill_blocking_processes=True) — on *every*
+# subsequent /tickets poll. Left unbounded, that accumulates one live
+# thread per poll interval for as long as the app runs, adding steady
+# background load (git ops + process-kill scans) that compounds with any
+# other slow request. Guarded by `_orphan_cleanup_lock`.
+_orphan_cleanup_inflight: set[str] = set()
+_orphan_cleanup_lock = threading.Lock()
+
+
 def _remove_orphaned_worktree(worktree_id: str) -> None:
     """Best-effort worktree teardown, run off the request path.
 
@@ -167,6 +179,9 @@ def _remove_orphaned_worktree(worktree_id: str) -> None:
         WorktreeManager().remove(worktree_id, force=True, kill_blocking_processes=True)
     except Exception as exc:  # noqa: BLE001
         log.warning("failed to remove orphaned worktree %s: %s", worktree_id, exc)
+    finally:
+        with _orphan_cleanup_lock:
+            _orphan_cleanup_inflight.discard(worktree_id)
 
 
 def _enrich_rows(
@@ -186,7 +201,12 @@ def _enrich_rows(
         open_ticket_nums = {int(t.id) for t in tickets if t.id.isdigit()}
         for ticket_num, rec in list(wt_map.items()):
             if ticket_num not in open_ticket_nums:
-                _spawn_background(_remove_orphaned_worktree, rec.id)
+                with _orphan_cleanup_lock:
+                    already_running = rec.id in _orphan_cleanup_inflight
+                    if not already_running:
+                        _orphan_cleanup_inflight.add(rec.id)
+                if not already_running:
+                    _spawn_background(_remove_orphaned_worktree, rec.id)
                 del wt_map[ticket_num]
 
     rows: list[dict] = []
@@ -365,7 +385,12 @@ async def tickets() -> dict:
     ``tickets`` array contains only the rows from projects that did succeed.
     """
     started = time.monotonic()
-    result = load_all_projects()
+    # Run off the event loop: load_all_projects() is filesystem work (config
+    # walk + git-remote discovery) with no async cancellation point, so a
+    # slow disk (e.g. saturated by a concurrent worktree `npm install`)
+    # would otherwise block *every* request the backend is serving — not
+    # just this one — for the same duration.
+    result = await asyncio.to_thread(load_all_projects)
     log.info("loaded %d project(s) in %.1fs", len(result.projects), time.monotonic() - started)
 
     github_projects = [p for p in result.projects if p.provider == "github"]

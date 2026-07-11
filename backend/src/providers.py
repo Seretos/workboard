@@ -17,6 +17,9 @@ default.
 """
 from __future__ import annotations
 
+import threading
+import time
+
 from lib_python_projects import ProjectConfig, load_projects
 from lib_python_projects.providers.azuredevops import AzureDevOpsProvider
 from lib_python_projects.providers.github import GitHubProvider
@@ -27,6 +30,29 @@ from lib_python_projects.providers.gitlab import GitLabProvider
 # `.seretos/projects.yml` drives both the MCP plugin and this app.
 _CONFIG_FILENAME = "projects.yml"
 _CONFIG_FILENAME_ALT = "projects.yaml"
+
+# load_all_projects() is filesystem work (config walk + git-remote
+# discovery) and, since a recent /tickets and /worktrees fix, runs in a
+# worker thread rather than blocking the event loop. It is still called
+# very often in a short span — every 5-minute poll, every focus refresh,
+# every worktree create/delete — for a project list that is effectively
+# static within a session. A short TTL cache collapses those redundant
+# reloads into one, which matters most exactly when it hurts most: a
+# concurrent worktree `npm install` saturates disk I/O and can turn a
+# normally-instant load into tens of seconds (see ticket describing the
+# backend going unresponsive under load).
+_PROJECTS_CACHE_TTL_S = 30.0
+_projects_cache_lock = threading.Lock()
+_projects_cache_result = None
+_projects_cache_ts: float = 0.0
+
+
+def _reset_projects_cache() -> None:
+    """Clear the cached project list. Exposed for tests."""
+    global _projects_cache_result, _projects_cache_ts
+    with _projects_cache_lock:
+        _projects_cache_result = None
+        _projects_cache_ts = 0.0
 
 
 _PROVIDERS = {
@@ -61,27 +87,42 @@ def load_all_projects():
     Without this filter, `lib_python_projects` appends the CWD git repo as an
     auto-discovered entry even when a config file is present, causing
     non-configured projects to appear on the board (tickets #68, #74).
+
+    Cached for `_PROJECTS_CACHE_TTL_S` seconds (module-level, thread-safe)
+    since this is called from multiple worker threads in short succession —
+    without the lock, two callers racing past an expired cache would both
+    pay the full (potentially slow) reload cost instead of one reload
+    serving both.
     """
-    import sys
+    global _projects_cache_result, _projects_cache_ts
 
-    mod = sys.modules[__name__]
-    result = mod.load_projects(
-        config_filename=_CONFIG_FILENAME,
-        config_filename_alt=_CONFIG_FILENAME_ALT,
-    )
+    with _projects_cache_lock:
+        now = time.monotonic()
+        if _projects_cache_result is not None and (now - _projects_cache_ts) < _PROJECTS_CACHE_TTL_S:
+            return _projects_cache_result
 
-    # Only filter when a config file was resolved.  When no config file is
-    # found the lib falls back to pure auto-discovery and every entry is
-    # intentional — filtering would blank the board entirely.
-    if result.config_file:
-        _AUTO_SOURCES = {"git-remote", "token-discovery"}
-        filtered = [
-            p for p in result.projects
-            if getattr(p, "source", None) not in _AUTO_SOURCES
-        ]
-        result = result.model_copy(update={"projects": filtered})
+        import sys
 
-    return result
+        mod = sys.modules[__name__]
+        result = mod.load_projects(
+            config_filename=_CONFIG_FILENAME,
+            config_filename_alt=_CONFIG_FILENAME_ALT,
+        )
+
+        # Only filter when a config file was resolved.  When no config file is
+        # found the lib falls back to pure auto-discovery and every entry is
+        # intentional — filtering would blank the board entirely.
+        if result.config_file:
+            _AUTO_SOURCES = {"git-remote", "token-discovery"}
+            filtered = [
+                p for p in result.projects
+                if getattr(p, "source", None) not in _AUTO_SOURCES
+            ]
+            result = result.model_copy(update={"projects": filtered})
+
+        _projects_cache_result = result
+        _projects_cache_ts = now
+        return result
 
 
 def provider_for(project: ProjectConfig):

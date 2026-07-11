@@ -404,6 +404,12 @@ def test_create_worktree_uses_asyncio_to_thread() -> None:
 
     Regression test for #86: create_worktree called WorktreeManager().create() directly
     inside an async handler, blocking the uvicorn event loop.
+
+    load_all_projects() is now *also* dispatched via asyncio.to_thread (see the
+    backend-unresponsive fix: a slow filesystem walk there must not block the
+    event loop either), so this handler now makes two to_thread calls. The
+    side_effect below lets the load_all_projects call through to its (already
+    mocked) return value and only special-cases the manager.create call.
     """
     project = _make_project()
     record = _make_worktree_record()
@@ -411,9 +417,14 @@ def test_create_worktree_uses_asyncio_to_thread() -> None:
     mock_manager = MagicMock()
     mock_manager.create.return_value = record
 
+    def to_thread_side_effect(fn, *args, **kwargs):
+        if fn is mock_manager.create:
+            return record
+        return fn(*args, **kwargs)
+
     with patch("src.api.worktrees.load_all_projects", return_value=_make_projects_result([project])), \
          patch("src.api.worktrees.WorktreeManager", return_value=mock_manager), \
-         patch("src.api.worktrees.asyncio.to_thread", return_value=record) as mock_to_thread:
+         patch("src.api.worktrees.asyncio.to_thread", side_effect=to_thread_side_effect) as mock_to_thread:
         response = client.post("/worktrees", json={
             "project_id": "workboard",
             "ticket_number": 42,
@@ -421,7 +432,7 @@ def test_create_worktree_uses_asyncio_to_thread() -> None:
         })
 
     assert response.status_code == 201
-    mock_to_thread.assert_called_once_with(
+    mock_to_thread.assert_any_call(
         mock_manager.create,
         "E:/development/workboard",
         "fix/42-some-feature",
