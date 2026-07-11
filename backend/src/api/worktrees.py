@@ -54,6 +54,24 @@ _NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
 # process was later observed to crash under the resulting resource pressure.
 # Set a hair below the frontend's 600s so the backend's own clean timeout
 # error wins the race and is what actually gets logged and returned.
+#
+# #113 follow-up (2026-07-12): a *separate* complaint — a slow POST
+# /worktrees appearing to stall a concurrent GET /tickets poll — was traced
+# to OS-level resource contention, not request serialization on workboard's
+# side: both handlers already dispatch their blocking work via
+# asyncio.to_thread (see test_worktrees.py's
+# test_concurrent_create_does_not_block_tickets_poll for a hermetic proof
+# that the two requests really do run concurrently). The actual root cause
+# was setup subprocesses (npm install/git checkout) saturating disk/CPU and
+# starving everything else on the machine, including the poll. The fix
+# landed upstream in lib-python-worktree v0.1.11's SetupRunner, which spawns
+# setup-step subprocesses at a lowered OS scheduling/IO priority by default
+# (toggle: WORKTREE_SETUP_LOWER_PRIORITY) — pinned here via requirements.txt
+# in #114. A dedicated ThreadPoolExecutor for worktree create/remove was
+# considered and declined: it would only matter for Python-side
+# executor/GIL contention, which isn't the bottleneck (subprocess.run()
+# releases the GIL while the child runs; the default to_thread pool already
+# has far more workers than cores).
 _WORKTREE_OP_TIMEOUT_S = 570
 
 

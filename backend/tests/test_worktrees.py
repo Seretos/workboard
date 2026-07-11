@@ -507,6 +507,115 @@ def test_delete_worktree_uses_asyncio_to_thread() -> None:
     )
 
 
+def test_concurrent_create_does_not_block_tickets_poll() -> None:
+    """A slow POST /worktrees does not delay a concurrent GET /tickets poll.
+
+    Regression test for #113 ("worktree creation slows concurrent tickets
+    polls to a crawl"). The reported symptom was that a slow worktree
+    creation appeared to stall the ticket board's poll. Two hypotheses were
+    considered for the root cause:
+
+    1. workboard's own request dispatch serializes the two requests (e.g.
+       blocking the event loop, or funneling both through a shared
+       executor with too few workers) — this is what this test disproves.
+    2. OS-level resource contention: the create's setup subprocesses (npm
+       install / git checkout) saturate disk/CPU, so *everything* on the
+       machine slows down, including an otherwise-independent poll. This
+       was confirmed to be the actual cause and is fixed upstream in
+       lib-python-worktree v0.1.11's SetupRunner (subprocess priority
+       lowering), already pinned in requirements.txt (#114).
+
+    A dedicated ThreadPoolExecutor for worktree create/remove was
+    considered and declined: it would only be relevant if hypothesis (1)
+    held via Python-side executor/GIL contention, but manager.create() runs
+    via the plain asyncio.to_thread default pool (far more workers than
+    CPU cores) and subprocess.run() releases the GIL while the child runs
+    — so there is no Python-side contention to fix. A real npm/git timing
+    benchmark was also considered and declined: it wouldn't be hermetic
+    (flaky, environment-dependent), and there is no meaningful "before"
+    state to compare against now that the upstream fix is pinned.
+
+    This test proves hypothesis (1) is false directly and deterministically:
+    it blocks WorktreeManager.create() on a threading.Event (simulating a
+    long-running setup step) and asserts a concurrent GET /tickets still
+    completes — via the real (unmocked) asyncio.to_thread dispatch path —
+    while the create is still blocked. Only after that assertion does it
+    release the event and confirm the create then completes normally.
+    Synchronization is entirely event-based (no sleeps) so the test cannot
+    be timing-flaky; every wait is bounded so a real deadlock fails fast
+    instead of hanging the suite.
+    """
+    import asyncio
+    import threading
+
+    import httpx
+
+    project = _make_project()
+    record = _make_worktree_record()
+
+    create_started = threading.Event()
+    release_create = threading.Event()
+
+    mock_manager = MagicMock()
+
+    def blocking_create(*args, **kwargs):
+        create_started.set()
+        # Bounded wait: if release_create is never set (test bug or a real
+        # deadlock reintroduced by a future change), fail loudly instead of
+        # hanging the suite.
+        if not release_create.wait(timeout=5):
+            raise TimeoutError("release_create was never set (deadlock?)")
+        return record
+
+    mock_manager.create.side_effect = blocking_create
+
+    async def scenario():
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as ac:
+            create_task = asyncio.create_task(
+                ac.post("/worktrees", json={
+                    "project_id": "workboard",
+                    "ticket_number": 42,
+                    "ticket_title": "Some Feature",
+                })
+            )
+
+            # Wait (off-loop) for manager.create() to actually be running in
+            # its worker thread before racing the poll against it.
+            started_in_time = await asyncio.to_thread(create_started.wait, 5)
+            assert started_in_time, "manager.create() never started"
+
+            # The create request is now blocked mid-flight. A concurrent
+            # /tickets poll must still complete promptly — this is the
+            # crux of the regression check.
+            tickets_response = await asyncio.wait_for(ac.get("/tickets"), timeout=5)
+
+            # ...and it must have completed while create_task is STILL
+            # pending — proving the poll wasn't queued behind the create.
+            assert not create_task.done(), (
+                "GET /tickets only completed after POST /worktrees — "
+                "the two requests are serialized"
+            )
+
+            # Now release the blocked create and confirm it completes cleanly.
+            release_create.set()
+            create_response = await asyncio.wait_for(create_task, timeout=5)
+
+            return tickets_response, create_response
+
+    with patch("src.api.worktrees.load_all_projects", return_value=_make_projects_result([project])), \
+         patch("src.api.worktrees.WorktreeManager", return_value=mock_manager), \
+         patch("src.api.tickets.load_all_projects", return_value=_make_projects_result([])):
+        tickets_response, create_response = asyncio.run(scenario())
+
+    assert tickets_response.status_code == 200
+    assert tickets_response.json() == {"tickets": [], "poll_errors": None}
+
+    assert create_response.status_code == 201
+    assert create_response.json()["id"] == record.id
+
+
 def test_create_worktree_uses_project_default_branch() -> None:
     """POST /worktrees passes project.default_branch (not a hardcoded 'main') to WorktreeManager.create.
 
