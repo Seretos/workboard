@@ -1506,3 +1506,87 @@ def test_enrich_rows_orphan_cleanup_retries_after_completion() -> None:
     finally:
         tickets_module._WORKTREE_LIB_AVAILABLE = original
         tickets_module._orphan_cleanup_inflight.discard(orphan_rec.id)
+
+
+def test_enrich_rows_orphan_cleanup_gives_up_after_max_attempts() -> None:
+    """After `_MAX_ORPHAN_CLEANUP_ATTEMPTS` consecutive failures, the orphan
+    is abandoned and no further background cleanup threads are spawned.
+
+    Regression: `kill_blocking_processes=True` makes lib-python-worktree scan
+    every process on the machine (on Windows including an expensive
+    NtQuerySystemInformation handle-table walk) before giving up. A worktree
+    that can never be unlocked (its lock isn't held by anything the scan can
+    find) used to pay that cost again on *every* poll forever. Once
+    abandoned, retries must stop.
+    """
+    import src.api.tickets as tickets_module
+
+    project = _sample_project()
+    orphan_rec = _sample_worktree_record(branch="fix/99-abandoned", path="C:/wt/abandoned")
+    orphan_rec.id = "workboard-fix-99-abandoned-test"
+
+    open_ticket = _sample_ticket("42", "Open ticket")
+
+    original = tickets_module._WORKTREE_LIB_AVAILABLE
+    try:
+        tickets_module._WORKTREE_LIB_AVAILABLE = True
+        with patch("src.api.tickets.WorktreeManager") as mock_wm_cls, \
+             patch("src.api.tickets._build_worktree_map", side_effect=lambda *a, **kw: {99: orphan_rec}), \
+             patch("src.api.tickets._spawn_background", side_effect=lambda fn, *a: fn(*a)):
+            mock_instance = MagicMock()
+            mock_instance.remove.side_effect = RuntimeError("locked")
+            mock_wm_cls.return_value = mock_instance
+
+            for _ in range(tickets_module._MAX_ORPHAN_CLEANUP_ATTEMPTS):
+                tickets_module._enrich_rows(project, [open_ticket], [])
+
+            assert mock_instance.remove.call_count == tickets_module._MAX_ORPHAN_CLEANUP_ATTEMPTS
+            assert orphan_rec.id in tickets_module._orphan_cleanup_abandoned
+
+            # A further poll must not attempt removal again.
+            tickets_module._enrich_rows(project, [open_ticket], [])
+        assert mock_instance.remove.call_count == tickets_module._MAX_ORPHAN_CLEANUP_ATTEMPTS
+    finally:
+        tickets_module._WORKTREE_LIB_AVAILABLE = original
+        tickets_module._orphan_cleanup_inflight.discard(orphan_rec.id)
+        tickets_module._orphan_cleanup_failure_counts.pop(orphan_rec.id, None)
+        tickets_module._orphan_cleanup_abandoned.discard(orphan_rec.id)
+
+
+def test_enrich_rows_orphan_cleanup_success_resets_failure_count() -> None:
+    """A successful removal clears any prior failure count.
+
+    A worktree that failed once (e.g. a dev server still mid-shutdown) but
+    then succeeds on a later poll must not be on a path toward permanent
+    abandonment — the failure count is per-worktree "consecutive" failures,
+    not lifetime failures.
+    """
+    import src.api.tickets as tickets_module
+
+    project = _sample_project()
+    orphan_rec = _sample_worktree_record(branch="fix/99-flaky", path="C:/wt/flaky")
+    orphan_rec.id = "workboard-fix-99-flaky-test"
+
+    open_ticket = _sample_ticket("42", "Open ticket")
+
+    original = tickets_module._WORKTREE_LIB_AVAILABLE
+    try:
+        tickets_module._WORKTREE_LIB_AVAILABLE = True
+        with patch("src.api.tickets.WorktreeManager") as mock_wm_cls, \
+             patch("src.api.tickets._build_worktree_map", side_effect=lambda *a, **kw: {99: orphan_rec}), \
+             patch("src.api.tickets._spawn_background", side_effect=lambda fn, *a: fn(*a)):
+            mock_instance = MagicMock()
+            mock_instance.remove.side_effect = [RuntimeError("locked"), None]
+            mock_wm_cls.return_value = mock_instance
+
+            tickets_module._enrich_rows(project, [open_ticket], [])
+            assert tickets_module._orphan_cleanup_failure_counts.get(orphan_rec.id) == 1
+
+            tickets_module._enrich_rows(project, [open_ticket], [])
+        assert orphan_rec.id not in tickets_module._orphan_cleanup_failure_counts
+        assert orphan_rec.id not in tickets_module._orphan_cleanup_abandoned
+    finally:
+        tickets_module._WORKTREE_LIB_AVAILABLE = original
+        tickets_module._orphan_cleanup_inflight.discard(orphan_rec.id)
+        tickets_module._orphan_cleanup_failure_counts.pop(orphan_rec.id, None)
+        tickets_module._orphan_cleanup_abandoned.discard(orphan_rec.id)
