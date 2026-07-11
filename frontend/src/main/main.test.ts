@@ -33,6 +33,10 @@ vi.mock("electron", () => {
       whenReady: vi.fn(() => Promise.resolve()),
       on: vi.fn(),
       quit: vi.fn(),
+      // Default: this instance wins the lock, matching prior (lock-free)
+      // behaviour for every existing test. Tests exercising the "another
+      // instance is already running" path override this per-test.
+      requestSingleInstanceLock: vi.fn(() => true),
     },
     BrowserWindow: BrowserWindowCtor,
     // Each Tray() call gets its own fresh instance so tests don't share state.
@@ -1552,5 +1556,80 @@ describe("detail-closed broadcast", () => {
 
     expect(mockDetailWin.hide).not.toHaveBeenCalled();
     expect(fakeMainWin.webContents.send).not.toHaveBeenCalledWith("detail-closed");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Single-instance lock — a second launch must not spawn a second Electron +
+// backend process pair (two backends independently polling/mutating the same
+// shared state files was a real source of intermittent contention).
+// ---------------------------------------------------------------------------
+describe("single-instance lock", () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  // The electron mock's `app` object is created once by the vi.mock() factory
+  // and reused (with accumulating mock.calls) across every test in this file
+  // — vi.resetModules() only clears the module registry, not spy call
+  // history. Each test below explicitly mockClear()s the spies it inspects,
+  // right before importing "./main.js", so assertions only see calls made
+  // during that test's own import.
+
+  it("quits immediately and registers no lifecycle handlers when the lock is not obtained", async () => {
+    const electron = await import("electron");
+    // @ts-ignore — override mock: another instance already holds the lock.
+    electron.app.requestSingleInstanceLock = vi.fn(() => false);
+    (electron.app.quit as ReturnType<typeof vi.fn>).mockClear();
+    (electron.app.on as ReturnType<typeof vi.fn>).mockClear();
+
+    await import("./main.js");
+
+    expect(electron.app.quit).toHaveBeenCalled();
+
+    const onSpy = electron.app.on as ReturnType<typeof vi.fn>;
+    const registered = onSpy.mock.calls.map((c: unknown[]) => c[0]);
+    expect(registered).not.toContain("second-instance");
+    expect(registered).not.toContain("window-all-closed");
+    expect(registered).not.toContain("before-quit");
+  });
+
+  it("registers window-all-closed/before-quit and does not quit when the lock is obtained", async () => {
+    const electron = await import("electron");
+    // @ts-ignore
+    electron.app.requestSingleInstanceLock = vi.fn(() => true);
+    (electron.app.quit as ReturnType<typeof vi.fn>).mockClear();
+    (electron.app.on as ReturnType<typeof vi.fn>).mockClear();
+
+    await import("./main.js");
+
+    expect(electron.app.quit).not.toHaveBeenCalled();
+
+    const onSpy = electron.app.on as ReturnType<typeof vi.fn>;
+    const registered = onSpy.mock.calls.map((c: unknown[]) => c[0]);
+    expect(registered).toContain("second-instance");
+    expect(registered).toContain("window-all-closed");
+    expect(registered).toContain("before-quit");
+  });
+
+  it("second-instance handler is a no-op when no window has been created yet", async () => {
+    const electron = await import("electron");
+    // @ts-ignore
+    electron.app.requestSingleInstanceLock = vi.fn(() => true);
+    (electron.app.on as ReturnType<typeof vi.fn>).mockClear();
+
+    await import("./main.js");
+
+    const onSpy = electron.app.on as ReturnType<typeof vi.fn>;
+    const secondInstanceCall = onSpy.mock.calls.find(
+      (c: unknown[]) => c[0] === "second-instance"
+    );
+    expect(secondInstanceCall).toBeDefined();
+
+    // bootstrap() (which sets the module-level main window) only runs under
+    // a real app.whenReady(), which the VITEST guard skips — so at this
+    // point there is no window yet. The handler must guard against that
+    // rather than throwing.
+    expect(() => (secondInstanceCall![1] as () => void)()).not.toThrow();
   });
 });

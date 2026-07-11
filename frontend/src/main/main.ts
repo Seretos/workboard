@@ -11,6 +11,11 @@ let backendPort: number | null = null;
 // Module-level tray reference — must persist to avoid GC collection.
 let tray: Tray | null = null;
 
+// Module-level main panel window reference. Needed so the "second-instance"
+// handler (see the single-instance lock below) can bring the existing panel
+// to the front instead of a second instance opening its own window.
+let mainWin: BrowserWindow | null = null;
+
 // Module-level detail window reference — reused on every card click.
 let detailWin: BrowserWindow | null = null;
 
@@ -446,29 +451,55 @@ async function bootstrap(): Promise<void> {
     return;
   }
 
-  const win = createWindow();
+  mainWin = createWindow();
   // Eagerly create the detail window so the first card click has no perceptible
   // delay — BrowserWindow creation is slow and must not block the click handler.
   detailWin = createDetailWindow();
-  tray = createTray(win, () => detailWin);
+  tray = createTray(mainWin, () => detailWin);
 }
 
-// Window close only hides the panel — the tray keeps the app alive.
-// Quitting happens via the tray context menu ("Beenden").
-app.on("window-all-closed", () => {
-  // Intentionally empty: do not quit when the window is closed.
-});
+// ---------------------------------------------------------------------------
+// Single-instance lock. Without this, launching Workboard a second time
+// (e.g. the natural reaction to the app *seeming* frozen during a slow
+// backend poll) spawns an entirely separate Electron + Python backend
+// process pair alongside the still-running original — this is a tray app
+// that stays resident on window close, so nothing ever reaps the first
+// instance. Two backends then poll GitHub and run worktree create/delete/
+// cleanup independently against the same shared state (~/.seretos/
+// projects.yml, the on-disk worktree store), racing each other for file
+// locks — a direct, compounding contributor to the exact kind of
+// intermittent slowness and "directory is still locked" failures this app
+// is otherwise trying to eliminate. Losing the race just quits; the
+// winning (already-running) instance is brought to the front instead.
+// ---------------------------------------------------------------------------
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!gotSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on("second-instance", () => {
+    if (mainWin) {
+      mainWin.show();
+      mainWin.focus();
+    }
+  });
 
-// Kill backend on quit; also ensure isQuitting is set so the close handler
-// does not block Electron's teardown sequence.
-app.on("before-quit", () => {
-  isQuitting = true;
-  if (backendChild) {
-    backendChild.kill();
+  // Window close only hides the panel — the tray keeps the app alive.
+  // Quitting happens via the tray context menu ("Beenden").
+  app.on("window-all-closed", () => {
+    // Intentionally empty: do not quit when the window is closed.
+  });
+
+  // Kill backend on quit; also ensure isQuitting is set so the close handler
+  // does not block Electron's teardown sequence.
+  app.on("before-quit", () => {
+    isQuitting = true;
+    if (backendChild) {
+      backendChild.kill();
+    }
+  });
+
+  // Guard: only run startup code when not under test (vitest sets VITEST env var).
+  if (!process.env.VITEST) {
+    app.whenReady().then(bootstrap);
   }
-});
-
-// Guard: only run startup code when not under test (vitest sets VITEST env var).
-if (!process.env.VITEST) {
-  app.whenReady().then(bootstrap);
 }
