@@ -887,6 +887,76 @@ describe("spawnBackend", () => {
     const spawnEnv = (cpMock.spawn as ReturnType<typeof vi.fn>).mock.calls[0][2].env;
     expect(spawnEnv).not.toHaveProperty("PROJECT_ISSUES_CONFIG");
   });
+
+  // -------------------------------------------------------------------------
+  // Regression guard for #113: the reported "worktree creation slows
+  // concurrent tickets polls to a crawl" symptom was root-caused to setup
+  // subprocesses (npm install/git checkout) saturating OS-level disk/CPU,
+  // fixed upstream in lib-python-worktree v0.1.11's SetupRunner, which spawns
+  // setup-step subprocesses at a lowered OS scheduling/IO priority by
+  // default — toggled off only when the backend process's own
+  // WORKTREE_SETUP_LOWER_PRIORITY env var is set to a disabling value
+  // ("", "0", "false", "no", "off"; see lib_python_worktree/setup/runner.py).
+  // The backend process's env is whatever spawnBackend hands to
+  // child_process.spawn(), so if spawnBackend ever stopped inheriting
+  // process.env wholesale (e.g. switched to an explicit allowlist) it could
+  // silently drop or override that var and disable the v0.1.11 fix. This
+  // test guards spawnBackend's env-building logic directly: it must pass an
+  // arbitrary ambient var through unchanged and must not force
+  // WORKTREE_SETUP_LOWER_PRIORITY to a disabling value itself.
+  // -------------------------------------------------------------------------
+  it("spawn env inherits process.env wholesale and never disables WORKTREE_SETUP_LOWER_PRIORITY", async () => {
+    const electron = await import("electron");
+    // @ts-ignore
+    electron.app.isPackaged = false;
+
+    Object.defineProperty(process, "platform", { value: "linux", configurable: true });
+
+    const originalMarker = process.env.WORKBOARD_TEST_MARKER;
+    const originalLowerPriority = process.env.WORKTREE_SETUP_LOWER_PRIORITY;
+    process.env.WORKBOARD_TEST_MARKER = "marker-value";
+    process.env.WORKTREE_SETUP_LOWER_PRIORITY = "1";
+
+    const fsMock = await import("fs");
+    (fsMock.existsSync as ReturnType<typeof vi.fn>).mockReturnValue(true);
+
+    const cpMock = await import("child_process");
+    const fakeChild = {
+      stdout: { on: vi.fn() },
+      stderr: { on: vi.fn() },
+      on: vi.fn(),
+    };
+    (cpMock.spawn as ReturnType<typeof vi.fn>).mockReset();
+    (cpMock.spawn as ReturnType<typeof vi.fn>).mockReturnValue(fakeChild);
+
+    try {
+      const { spawnBackend } = await import("./main.js");
+      spawnBackend().catch(() => {});
+
+      const spawnEnv = (cpMock.spawn as ReturnType<typeof vi.fn>).mock.calls[0][2].env;
+
+      // Arbitrary ambient vars must flow through unchanged — proves the env
+      // is built via {...process.env} rather than a hand-picked allowlist.
+      expect(spawnEnv.WORKBOARD_TEST_MARKER).toBe("marker-value");
+      // The priority-lowering toggle must pass through unchanged too, and
+      // must never be forced to one of the disabling values by spawnBackend.
+      expect(spawnEnv.WORKTREE_SETUP_LOWER_PRIORITY).toBe("1");
+      expect(["", "0", "false", "no", "off"]).not.toContain(
+        spawnEnv.WORKTREE_SETUP_LOWER_PRIORITY
+      );
+    } finally {
+      if (originalMarker === undefined) {
+        delete process.env.WORKBOARD_TEST_MARKER;
+      } else {
+        process.env.WORKBOARD_TEST_MARKER = originalMarker;
+      }
+      if (originalLowerPriority === undefined) {
+        delete process.env.WORKTREE_SETUP_LOWER_PRIORITY;
+      } else {
+        process.env.WORKTREE_SETUP_LOWER_PRIORITY = originalLowerPriority;
+      }
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
