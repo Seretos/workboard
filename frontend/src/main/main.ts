@@ -444,6 +444,8 @@ export function createTray(
   t.setToolTip("Workboard");
 
   const contextMenu = Menu.buildFromTemplate([
+    { label: `Version ${app.getVersion()}`, enabled: false },
+    { type: "separator" },
     {
       label: "Beenden",
       click: () => {

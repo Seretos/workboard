@@ -2,7 +2,7 @@
 
 interface Window {
   appInfo: {
-    getVersion: () => string;
+    getVersion: () => Promise<string>;
   };
   backend: {
     fetchJson: (

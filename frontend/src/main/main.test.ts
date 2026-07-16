@@ -563,6 +563,39 @@ describe("createTray", () => {
     const trayInstance = TrayCtor.mock.results[TrayCtor.mock.results.length - 1].value;
     expect(trayInstance.setToolTip).toHaveBeenCalledWith("Workboard");
   });
+
+  it("shows a disabled 'Version <x.y.z>' item above a separator, above the still-wired 'Beenden' item", async () => {
+    const electron = await import("electron");
+
+    const mockWin = {
+      isVisible: vi.fn(() => false),
+      show: vi.fn(),
+      hide: vi.fn(),
+    };
+
+    const { createTray } = await import("./main.js");
+    createTray(mockWin as any);
+
+    const MenuMock = electron.Menu as unknown as { buildFromTemplate: ReturnType<typeof vi.fn> };
+    const lastTemplate = MenuMock.buildFromTemplate.mock.calls[
+      MenuMock.buildFromTemplate.mock.calls.length - 1
+    ][0] as Array<{ label?: string; type?: string; enabled?: boolean; click?: () => void }>;
+
+    const versionIndex = lastTemplate.findIndex((item) => item.label === "Version 0.0.0");
+    expect(versionIndex).toBeGreaterThanOrEqual(0);
+    expect(lastTemplate[versionIndex].enabled).toBe(false);
+
+    const beendenIndex = lastTemplate.findIndex((item) => item.label === "Beenden");
+    expect(beendenIndex).toBeGreaterThan(versionIndex);
+
+    // A separator sits between the version item and "Beenden".
+    expect(lastTemplate[versionIndex + 1].type).toBe("separator");
+
+    // "Beenden" is still present and still wired to quit.
+    (electron.app.quit as ReturnType<typeof vi.fn>).mockClear();
+    lastTemplate[beendenIndex].click!();
+    expect(electron.app.quit).toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------
