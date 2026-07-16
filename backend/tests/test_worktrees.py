@@ -203,6 +203,98 @@ def test_create_worktree_branch_already_checked_out() -> None:
     assert response.status_code == 409
 
 
+def test_create_worktree_self_heals_stale_checkout_and_retries() -> None:
+    """A BranchAlreadyCheckedOutError for a *clean* leftover checkout (not
+    tracked in our state — e.g. left behind by a crashed prior create) is
+    reclaimed (adopt + remove) and the create is retried automatically."""
+    from lib_python_worktree import BranchAlreadyCheckedOutError
+
+    project = _make_project()
+    conflict = BranchAlreadyCheckedOutError(
+        branch="fix/42-test", path="C:/wt/stale-one", prunable=False,
+    )
+    record = _make_worktree_record()
+    stale_record = MagicMock(id="stale-id", path="C:/wt/stale-one")
+
+    mock_manager = MagicMock()
+    mock_manager.create.side_effect = [conflict, record]
+    mock_manager.list.return_value = [stale_record]
+
+    with patch("src.api.worktrees.load_all_projects", return_value=_make_projects_result([project])), \
+         patch("src.api.worktrees.WorktreeManager", return_value=mock_manager), \
+         patch("src.api.worktrees._is_clean_worktree", return_value=True):
+        response = client.post("/worktrees", json={
+            "project_id": "workboard",
+            "ticket_number": 42,
+            "ticket_title": "Test",
+        })
+
+    assert response.status_code == 201
+    assert mock_manager.create.call_count == 2
+    mock_manager.adopt.assert_called_once_with("E:/development/workboard")
+    mock_manager.remove.assert_called_once_with("stale-id", force=True, kill_blocking_processes=True)
+
+
+def test_create_worktree_self_heals_prunable_checkout_via_prune() -> None:
+    """A BranchAlreadyCheckedOutError with prunable=True (on-disk dir already
+    gone) is cleared with `git worktree prune`, no adopt/remove needed."""
+    from lib_python_worktree import BranchAlreadyCheckedOutError
+
+    project = _make_project()
+    conflict = BranchAlreadyCheckedOutError(
+        branch="fix/42-test", path="C:/wt/gone", prunable=True,
+    )
+    record = _make_worktree_record()
+
+    mock_manager = MagicMock()
+    mock_manager.create.side_effect = [conflict, record]
+
+    fake_prune = MagicMock(returncode=0, stdout="", stderr="")
+    with patch("src.api.worktrees.load_all_projects", return_value=_make_projects_result([project])), \
+         patch("src.api.worktrees.WorktreeManager", return_value=mock_manager), \
+         patch("src.api.worktrees.subprocess.run", return_value=fake_prune) as mock_run:
+        response = client.post("/worktrees", json={
+            "project_id": "workboard",
+            "ticket_number": 42,
+            "ticket_title": "Test",
+        })
+
+    assert response.status_code == 201
+    assert mock_manager.create.call_count == 2
+    mock_run.assert_called_once_with(
+        ["git", "-C", "E:/development/workboard", "worktree", "prune"],
+        capture_output=True, text=True, timeout=30, check=True,
+    )
+
+
+def test_create_worktree_does_not_self_heal_dirty_checkout() -> None:
+    """A BranchAlreadyCheckedOutError for a *dirty* leftover checkout is left
+    alone (no auto-remove of uncommitted work) and surfaces as 409."""
+    from lib_python_worktree import BranchAlreadyCheckedOutError
+
+    project = _make_project()
+    conflict = BranchAlreadyCheckedOutError(
+        branch="fix/42-test", path="C:/wt/dirty-one", prunable=False,
+    )
+
+    mock_manager = MagicMock()
+    mock_manager.create.side_effect = conflict
+
+    with patch("src.api.worktrees.load_all_projects", return_value=_make_projects_result([project])), \
+         patch("src.api.worktrees.WorktreeManager", return_value=mock_manager), \
+         patch("src.api.worktrees._is_clean_worktree", return_value=False):
+        response = client.post("/worktrees", json={
+            "project_id": "workboard",
+            "ticket_number": 42,
+            "ticket_title": "Test",
+        })
+
+    assert response.status_code == 409
+    mock_manager.adopt.assert_not_called()
+    mock_manager.remove.assert_not_called()
+    assert mock_manager.create.call_count == 1
+
+
 def test_create_worktree_dirty() -> None:
     """POST /worktrees returns 409 when DirtyWorktreeError is raised."""
     from lib_python_worktree import DirtyWorktreeError
