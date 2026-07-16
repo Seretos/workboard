@@ -9,3 +9,4 @@ backend-bin/
 **/*.pyc
 **/*.pyo
 **/.pytest_cache/
+.process-ticket-result.json
