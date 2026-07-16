@@ -10,6 +10,7 @@ export interface TicketRow {
   provider: string;
   project_id: string;
   project_path: string;
+  board_id: string | null;
   pull_request?: {
     number: number;
     url: string;
