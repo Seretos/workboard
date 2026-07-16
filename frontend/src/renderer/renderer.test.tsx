@@ -8,7 +8,7 @@ import { TicketBoard } from "./components/TicketBoard";
 import { TicketCard } from "./components/TicketCard";
 import { BrowserDetailPresenter } from "./detail/BrowserDetailPresenter";
 import { ElectronDetailPresenter } from "./detail/ElectronDetailPresenter";
-import type { TicketRow } from "./types";
+import type { TicketRow, Viewer } from "./types";
 import type { DetailPresenter } from "./detail/DetailPresenter";
 import type { DetailTicket } from "./types";
 import type { TicketsClient } from "./client/TicketsClient";
@@ -25,6 +25,7 @@ function makeTicket(overrides: {
   body?: string;
   labels?: string[];
   provider?: string;
+  assignees?: string[];
   project_id: string;
   project_path: string;
   board_id?: string | null;
@@ -39,6 +40,7 @@ function makeTicket(overrides: {
     body: overrides.body,
     labels: overrides.labels ?? [],
     provider: overrides.provider ?? "github",
+    assignees: overrides.assignees ?? [],
     project_id: overrides.project_id,
     project_path: overrides.project_path,
     board_id: overrides.board_id !== undefined ? overrides.board_id : null,
@@ -46,6 +48,8 @@ function makeTicket(overrides: {
     worktree: overrides.worktree !== undefined ? overrides.worktree : null,
   };
 }
+
+const ALL_NULL_VIEWER: Viewer = { github: null, gitlab: null, azuredevops: null };
 
 function makePresenter(activeId: string | null = null): { presenter: DetailPresenter; open: ReturnType<typeof vi.fn>; close: ReturnType<typeof vi.fn> } {
   const open = vi.fn() as (ticket: DetailTicket) => void;
@@ -196,6 +200,7 @@ describe("TicketList — PR accent", () => {
       url: "https://example.com",
       labels: [] as string[],
       provider: "github",
+      assignees: [],
       project_id: "proj-a",
       project_path: "/repos/alpha",
       // pull_request intentionally absent
@@ -1151,13 +1156,14 @@ describe("TicketBoard — view mode switcher", () => {
     ];
   }
 
-  function renderBoard(tickets: TicketRow[]) {
+  function renderBoard(tickets: TicketRow[], viewer: Viewer = ALL_NULL_VIEWER) {
     const { presenter } = makePresenter();
     return render(
       <TicketBoard
         tickets={tickets}
         status="OK"
         ticketCount={String(tickets.length)}
+        viewer={viewer}
         presenter={presenter}
         client={makeClient()}
         onRefresh={vi.fn()}
@@ -1217,6 +1223,140 @@ describe("TicketBoard — view mode switcher", () => {
 
     expect(within(container).getByText("Nach Boards").className).toContain("--active");
     expect(within(container).getByText("Nach Projekten").className).not.toContain("--active");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TicketBoard — assignedToMeOnly filter (ticket #134)
+// ---------------------------------------------------------------------------
+
+describe("TicketBoard — assignedToMeOnly filter", () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  afterEach(() => {
+    localStorage.clear();
+  });
+
+  function renderBoardWithViewer(tickets: TicketRow[], viewer: Viewer) {
+    const { presenter } = makePresenter();
+    return render(
+      <TicketBoard
+        tickets={tickets}
+        status="OK"
+        ticketCount={String(tickets.length)}
+        viewer={viewer}
+        presenter={presenter}
+        client={makeClient()}
+        onRefresh={vi.fn()}
+        activeTicketId={null}
+      />
+    );
+  }
+
+  function getFilterCheckbox(container: HTMLElement): HTMLInputElement {
+    return container.querySelector(".filter-settings input[type='checkbox']") as HTMLInputElement;
+  }
+
+  it("view-independence: the filtered ticket set is identical across project/board view switches", async () => {
+    const viewer: Viewer = { github: "octocat", gitlab: null, azuredevops: null };
+    const tickets = [
+      makeTicket({ id: "1", project_id: "proj-a", project_path: "/repos/alpha", board_id: "github:acme/7", assignees: ["octocat"] }),
+      makeTicket({ id: "2", project_id: "proj-a", project_path: "/repos/alpha", board_id: "github:acme/7", assignees: ["someone-else"] }),
+      makeTicket({ id: "3", project_id: "proj-b", project_path: "/repos/beta", board_id: "github:acme/8", assignees: ["octocat"] }),
+    ];
+    const { container } = renderBoardWithViewer(tickets, viewer);
+
+    const checkbox = getFilterCheckbox(container);
+    await userEvent.click(checkbox);
+
+    expect(container.querySelectorAll(".ticket-card")).toHaveLength(2);
+
+    const boardBtn = within(container).getByText("Nach Boards");
+    await userEvent.click(boardBtn);
+    expect(container.querySelectorAll(".ticket-card")).toHaveLength(2);
+
+    const projectBtn = within(container).getByText("Nach Projekten");
+    await userEvent.click(projectBtn);
+    expect(container.querySelectorAll(".ticket-card")).toHaveLength(2);
+
+    // Filter off restores the full set.
+    await userEvent.click(checkbox);
+    expect(container.querySelectorAll(".ticket-card")).toHaveLength(3);
+  });
+
+  it("banner: shown with both unresolved project paths when viewer is all-null and filter is on", async () => {
+    const tickets = [
+      makeTicket({ id: "1", project_id: "proj-a", project_path: "/repos/alpha" }),
+      makeTicket({ id: "2", project_id: "proj-b", project_path: "/repos/beta" }),
+    ];
+    const { container } = renderBoardWithViewer(tickets, ALL_NULL_VIEWER);
+
+    expect(container.querySelector(".filter-unresolved-banner")).toBeNull();
+
+    const checkbox = getFilterCheckbox(container);
+    await userEvent.click(checkbox);
+
+    const banner = container.querySelector(".filter-unresolved-banner");
+    expect(banner).not.toBeNull();
+    expect(banner!.textContent).toContain("/repos/alpha");
+    expect(banner!.textContent).toContain("/repos/beta");
+  });
+
+  it("banner: absent when the filter is off", () => {
+    const tickets = [
+      makeTicket({ id: "1", project_id: "proj-a", project_path: "/repos/alpha" }),
+    ];
+    const { container } = renderBoardWithViewer(tickets, ALL_NULL_VIEWER);
+
+    expect(container.querySelector(".filter-unresolved-banner")).toBeNull();
+  });
+
+  it("banner: absent when the filter is on but all tickets resolve and match", async () => {
+    const viewer: Viewer = { github: "octocat", gitlab: null, azuredevops: null };
+    const tickets = [
+      makeTicket({ id: "1", project_id: "proj-a", project_path: "/repos/alpha", assignees: ["octocat"] }),
+    ];
+    const { container } = renderBoardWithViewer(tickets, viewer);
+
+    const checkbox = getFilterCheckbox(container);
+    await userEvent.click(checkbox);
+
+    expect(container.querySelector(".filter-unresolved-banner")).toBeNull();
+  });
+
+  it("banner: mixed — lists only the unresolved project path, not the matched one", async () => {
+    const viewer: Viewer = { github: "octocat", gitlab: null, azuredevops: null };
+    const tickets = [
+      makeTicket({ id: "1", project_id: "proj-a", project_path: "/repos/alpha", provider: "github", assignees: ["octocat"] }),
+      makeTicket({ id: "2", project_id: "proj-b", project_path: "/repos/beta", provider: "gitlab", assignees: [] }),
+    ];
+    const { container } = renderBoardWithViewer(tickets, viewer);
+
+    const checkbox = getFilterCheckbox(container);
+    await userEvent.click(checkbox);
+
+    const banner = container.querySelector(".filter-unresolved-banner");
+    expect(banner).not.toBeNull();
+    expect(banner!.textContent).toContain("/repos/beta");
+    expect(banner!.textContent).not.toContain("/repos/alpha");
+  });
+
+  it("persistence via UI: toggling the checkbox writes ticket-filter-settings and the toggle stays on across remount", async () => {
+    const tickets = [
+      makeTicket({ id: "1", project_id: "proj-a", project_path: "/repos/alpha" }),
+    ];
+    const { container, unmount } = renderBoardWithViewer(tickets, ALL_NULL_VIEWER);
+
+    const checkbox = getFilterCheckbox(container);
+    await userEvent.click(checkbox);
+
+    expect(JSON.parse(localStorage.getItem("ticket-filter-settings")!)).toEqual({ assignedToMeOnly: true });
+    unmount();
+
+    const { container: container2 } = renderBoardWithViewer(tickets, ALL_NULL_VIEWER);
+    expect(getFilterCheckbox(container2).checked).toBe(true);
   });
 });
 
