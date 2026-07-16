@@ -13,7 +13,13 @@ from unittest.mock import MagicMock, call, patch
 from fastapi.testclient import TestClient
 
 from src.main import app
-from lib_python_projects.models import ProjectConfig, ProjectsLoadResult
+from lib_python_projects.models import (
+    AzureBoardsBinding,
+    Board,
+    GithubProjectsV2Binding,
+    ProjectConfig,
+    ProjectsLoadResult,
+)
 from lib_python_projects.providers.base import ProviderError, PullRequest, RateLimitError, Ticket
 
 
@@ -47,6 +53,24 @@ def _sample_gitlab_project(
     path: str = "org/gl-proj",
 ) -> ProjectConfig:
     return _sample_project(project_id=project_id, path=path, provider="gitlab")
+
+
+def _sample_azuredevops_project(
+    project_id: str = "ado-proj",
+    path: str = "org/project/repo",
+) -> ProjectConfig:
+    """Azure DevOps path is 'organization/project/repository' (3 segments)."""
+    return _sample_project(project_id=project_id, path=path, provider="azuredevops")
+
+
+def _project_with_board(
+    project: ProjectConfig,
+    binding: GithubProjectsV2Binding | AzureBoardsBinding,
+    columns: list[str] | None = None,
+) -> ProjectConfig:
+    """Return a copy of `project` with a `board` (columns + binding) attached."""
+    board = Board(columns=columns or ["Todo", "In Progress", "Done"], binding=binding)
+    return project.model_copy(update={"board": board})
 
 
 def _sample_ticket(ticket_id: str = "42", title: str = "Fix the thing") -> Ticket:
@@ -1590,3 +1614,170 @@ def test_enrich_rows_orphan_cleanup_success_resets_failure_count() -> None:
         tickets_module._orphan_cleanup_inflight.discard(orphan_rec.id)
         tickets_module._orphan_cleanup_failure_counts.pop(orphan_rec.id, None)
         tickets_module._orphan_cleanup_abandoned.discard(orphan_rec.id)
+
+
+# ---------------------------------------------------------------------------
+# Ticket #132: assignees (characterization), board_id, and viewer.
+# ---------------------------------------------------------------------------
+
+
+def test_ticket_row_includes_assignees() -> None:
+    """Each ticket row carries the provider's assignees list unchanged.
+
+    Characterization test (ticket #132 part 1): _enrich_rows already spreads
+    every Ticket dataclass field, including assignees, via `asdict(ticket)`
+    — this locks that existing behaviour in place rather than driving new
+    production code.
+    """
+    project = _sample_project()
+    ticket = _sample_ticket("42")  # assignees=["octocat"]
+    with patch("src.api.tickets.load_all_projects",
+               return_value=_make_result([project])), \
+         patch("src.api.tickets.fetch_open_board",
+               return_value=[_make_batch_result(project, tickets=[ticket])]):
+        response = client.get("/tickets")
+    items = response.json()["tickets"]
+    assert len(items) == 1
+    assert items[0]["assignees"] == ["octocat"]
+
+
+def test_ticket_row_assignees_empty() -> None:
+    """A ticket with no assignees carries an empty list, not null or a missing key."""
+    project = _sample_project()
+    ticket = _sample_ticket("42")
+    ticket.assignees = []
+    with patch("src.api.tickets.load_all_projects",
+               return_value=_make_result([project])), \
+         patch("src.api.tickets.fetch_open_board",
+               return_value=[_make_batch_result(project, tickets=[ticket])]):
+        response = client.get("/tickets")
+    items = response.json()["tickets"]
+    assert len(items) == 1
+    assert items[0]["assignees"] == []
+
+
+def test_derive_board_id_github_projects() -> None:
+    """A github-projects-v2 binding derives 'github:{owner}/{project_number}'."""
+    from src.api.tickets import _derive_board_id
+    project = _project_with_board(
+        _sample_project(),
+        GithubProjectsV2Binding(kind="github-projects-v2", owner="Seretos", project_number=7),
+    )
+    assert _derive_board_id(project) == "github:Seretos/7"
+
+
+def test_derive_board_id_azuredevops() -> None:
+    """An azure-boards binding derives 'azuredevops:{team}/{board}'."""
+    from src.api.tickets import _derive_board_id
+    project = _project_with_board(
+        _sample_azuredevops_project(),
+        AzureBoardsBinding(kind="azure-boards", team="Alpha", board="Stories"),
+    )
+    assert _derive_board_id(project) == "azuredevops:Alpha/Stories"
+
+
+def test_derive_board_id_gitlab_none() -> None:
+    """GitLab projects derive board_id=None via the explicit provider guard.
+
+    `board` is a provider-agnostic ProjectConfig field, so a misconfigured
+    GitLab project could still carry a (github-flavoured) board binding.
+    Attaching one here proves the None comes from the provider check, not
+    merely from GitLab projects incidentally never having `board` set —
+    this test would fail if the provider guard were removed.
+    """
+    from src.api.tickets import _derive_board_id
+    project = _project_with_board(
+        _sample_gitlab_project(),
+        GithubProjectsV2Binding(kind="github-projects-v2", owner="Seretos", project_number=7),
+    )
+    assert _derive_board_id(project) is None
+
+
+def test_derive_board_id_no_board_none() -> None:
+    """A project with no board configured at all → board_id is None."""
+    from src.api.tickets import _derive_board_id
+    project = _sample_project()
+    assert _derive_board_id(project) is None
+
+
+def test_derive_board_id_incomplete_binding_none() -> None:
+    """A binding missing an identifying field (project_number=None) → board_id is None."""
+    from src.api.tickets import _derive_board_id
+    project = _project_with_board(
+        _sample_project(),
+        GithubProjectsV2Binding(kind="github-projects-v2", owner="Seretos", project_number=None),
+    )
+    assert _derive_board_id(project) is None
+
+
+def test_derive_board_id_same_binding_same_id() -> None:
+    """Two distinct projects sharing one org-wide binding derive the same board_id."""
+    from src.api.tickets import _derive_board_id
+    binding_a = GithubProjectsV2Binding(kind="github-projects-v2", owner="Seretos", project_number=7)
+    binding_b = GithubProjectsV2Binding(kind="github-projects-v2", owner="Seretos", project_number=7)
+    project_a = _project_with_board(_sample_project("a", "org/a"), binding_a)
+    project_b = _project_with_board(_sample_project("b", "org/b"), binding_b)
+    assert _derive_board_id(project_a) == _derive_board_id(project_b)
+
+
+def test_board_id_present_via_batch_path() -> None:
+    """board_id is set on rows fetched through the GitHub batch path (_fetch_github_batch)."""
+    project = _project_with_board(
+        _sample_project(),
+        GithubProjectsV2Binding(kind="github-projects-v2", owner="Seretos", project_number=3),
+    )
+    with patch("src.api.tickets.load_all_projects",
+               return_value=_make_result([project])), \
+         patch("src.api.tickets.fetch_open_board",
+               return_value=[_make_batch_result(project, tickets=[_sample_ticket("42")])]):
+        response = client.get("/tickets")
+    items = response.json()["tickets"]
+    assert len(items) == 1
+    assert items[0]["board_id"] == "github:Seretos/3"
+
+
+def test_board_id_present_via_rest_path() -> None:
+    """board_id is set on rows fetched through the non-GitHub REST fan-out path
+    (_fetch_project_tickets), exercised here via an Azure DevOps project."""
+    project = _project_with_board(
+        _sample_azuredevops_project(),
+        AzureBoardsBinding(kind="azure-boards", team="Alpha", board="Stories"),
+    )
+    ado_provider = _fake_provider([_sample_ticket("42", "ADO ticket")])
+    with patch("src.api.tickets.load_all_projects",
+               return_value=_make_result([project])), \
+         patch("src.api.tickets.provider_for", return_value=ado_provider):
+        response = client.get("/tickets")
+    items = response.json()["tickets"]
+    assert len(items) == 1
+    assert items[0]["board_id"] == "azuredevops:Alpha/Stories"
+
+
+def test_resolve_viewer_all_null() -> None:
+    """_resolve_viewer() returns a static all-null map for every known provider."""
+    from src.api.tickets import _resolve_viewer
+    assert _resolve_viewer() == {"github": None, "gitlab": None, "azuredevops": None}
+
+
+def test_tickets_envelope_includes_viewer() -> None:
+    """GET /tickets envelope carries a 'viewer' key alongside tickets/poll_errors."""
+    project = _sample_project()
+    with patch("src.api.tickets.load_all_projects",
+               return_value=_make_result([project])), \
+         patch("src.api.tickets.fetch_open_board",
+               return_value=[_make_batch_result(project, tickets=[_sample_ticket()])]):
+        response = client.get("/tickets")
+    data = response.json()
+    assert data["viewer"] == {"github": None, "gitlab": None, "azuredevops": None}
+
+
+def test_viewer_present_when_rate_limited() -> None:
+    """Even when a poll is rate-limited, the viewer map is still the full null map."""
+    project = _sample_project()
+    with patch("src.api.tickets.load_all_projects",
+               return_value=_make_result([project])), \
+         patch("src.api.tickets.fetch_open_board",
+               side_effect=_make_rate_limit_error(retry_after=120)):
+        response = client.get("/tickets")
+    data = response.json()
+    assert data["viewer"] == {"github": None, "gitlab": None, "azuredevops": None}

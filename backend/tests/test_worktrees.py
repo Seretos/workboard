@@ -702,7 +702,11 @@ def test_concurrent_create_does_not_block_tickets_poll() -> None:
         tickets_response, create_response = asyncio.run(scenario())
 
     assert tickets_response.status_code == 200
-    assert tickets_response.json() == {"tickets": [], "poll_errors": None}
+    assert tickets_response.json() == {
+        "tickets": [],
+        "poll_errors": None,
+        "viewer": {"github": None, "gitlab": None, "azuredevops": None},
+    }
 
     assert create_response.status_code == 201
     assert create_response.json()["id"] == record.id

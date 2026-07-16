@@ -220,6 +220,61 @@ def _remove_orphaned_worktree(worktree_id: str) -> None:
             _orphan_cleanup_inflight.discard(worktree_id)
 
 
+def _derive_board_id(project: ProjectConfig) -> str | None:
+    """Derive a stable board identifier from a project's board binding.
+
+    Returns ``None`` when: the project's provider is GitLab (GitLab boards
+    aren't modelled, even though ``board`` is a provider-agnostic
+    ``ProjectConfig`` field that a misconfigured project could still set);
+    the project has no ``board`` configured; the board has no ``binding``;
+    or the binding is missing an identifying field (e.g. a ``board:`` block
+    declared before the owning org/project is known). ``getattr`` guards
+    defensively throughout in case the schema ever changes.
+
+    Branches on the binding's ``kind`` discriminator STRING rather than
+    ``isinstance`` checks against the binding classes, so this module does
+    not need to import ``GithubProjectsV2Binding`` / ``AzureBoardsBinding``.
+
+    Two projects that share the exact same binding fields derive the same
+    ``board_id`` "for free" — the id is a pure function of those fields,
+    not of the project's own identity.
+    """
+    if getattr(project, "provider", None) == "gitlab":
+        return None
+    board = getattr(project, "board", None)
+    if board is None:
+        return None
+    binding = getattr(board, "binding", None)
+    if binding is None:
+        return None
+    kind = getattr(binding, "kind", None)
+    if kind == "github-projects-v2":
+        owner = getattr(binding, "owner", None)
+        project_number = getattr(binding, "project_number", None)
+        if owner is None or project_number is None:
+            return None
+        return f"github:{owner}/{project_number}"
+    if kind == "azure-boards":
+        team = getattr(binding, "team", None)
+        board_name = getattr(binding, "board", None)
+        if team is None or board_name is None:
+            return None
+        return f"azuredevops:{team}/{board_name}"
+    return None
+
+
+def _resolve_viewer() -> dict[str, str | None]:
+    """Per-provider viewer identity for the "assigned to me" filter.
+
+    Always-null today: the pinned ``lib_python_projects`` has no
+    whoami/viewer API yet, so there is no way to resolve "who am I" per
+    provider. The keys (github/gitlab/azuredevops) are static so the
+    frontend has a stable envelope shape to code against ahead of that
+    capability landing.
+    """
+    return {"github": None, "gitlab": None, "azuredevops": None}
+
+
 def _enrich_rows(
     project: ProjectConfig,
     tickets: list,
@@ -232,6 +287,7 @@ def _enrich_rows(
     """
     pr_map = _build_pr_map(prs)
     wt_map = _build_worktree_map(getattr(project, "local_path", None))
+    board_id = _derive_board_id(project)
 
     if _WORKTREE_LIB_AVAILABLE and wt_map:
         open_ticket_nums = {int(t.id) for t in tickets if t.id.isdigit()}
@@ -253,6 +309,7 @@ def _enrich_rows(
         row["provider"] = project.provider
         row["project_id"] = project.id
         row["project_path"] = project.path
+        row["board_id"] = board_id
 
         ticket_num = int(ticket.id) if ticket.id.isdigit() else None
         matched_pr = pr_map.get(ticket_num) if ticket_num is not None else None
@@ -415,12 +472,16 @@ async def tickets() -> dict:
     board's latency is the slowest single project, not the sum.
 
     Returns a JSON envelope:
-    ``{"tickets": [...], "poll_errors": null | {"rate_limited": bool, ...}}``
+    ``{"tickets": [...], "poll_errors": null | {"rate_limited": bool, ...},
+    "viewer": {"github": str | null, "gitlab": str | null, "azuredevops": str | null}}``
 
     ``poll_errors`` is ``null`` when all projects succeeded (including a
     genuine empty ticket list).  When one or more projects were
     rate-limited, ``poll_errors.rate_limited`` is ``true`` and the
     ``tickets`` array contains only the rows from projects that did succeed.
+
+    ``viewer`` is a per-provider identity map for the "assigned to me"
+    filter; every key is always ``null`` today (see ``_resolve_viewer``).
     """
     started = time.monotonic()
     # Run off the event loop: load_all_projects() is filesystem work (config
@@ -489,4 +550,4 @@ async def tickets() -> dict:
         if (rate_limited or failed_projects)
         else None
     )
-    return {"tickets": ticket_rows, "poll_errors": poll_errors}
+    return {"tickets": ticket_rows, "poll_errors": poll_errors, "viewer": _resolve_viewer()}
