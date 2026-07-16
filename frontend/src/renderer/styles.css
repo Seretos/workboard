@@ -83,6 +83,29 @@ body {
   text-align: center;
 }
 
+/* ---- View mode switcher ---- */
+.view-mode-switch {
+  display: flex;
+  margin-left: auto;
+  gap: 2px;
+}
+
+.view-mode-btn {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-text-muted);
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  padding: 3px 8px;
+  cursor: pointer;
+}
+
+.view-mode-btn--active {
+  color: var(--color-text);
+  background: var(--color-badge-bg);
+}
+
 /* ---- Ticket list ---- */
 #ticket-list {
   list-style: none;

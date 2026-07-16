@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 import React from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, act } from "@testing-library/react";
+import { render, screen, act, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { TicketList } from "./components/TicketList";
+import { TicketList, boardLabel } from "./components/TicketList";
+import { TicketBoard } from "./components/TicketBoard";
 import { TicketCard } from "./components/TicketCard";
 import { BrowserDetailPresenter } from "./detail/BrowserDetailPresenter";
 import { ElectronDetailPresenter } from "./detail/ElectronDetailPresenter";
@@ -26,6 +27,7 @@ function makeTicket(overrides: {
   provider?: string;
   project_id: string;
   project_path: string;
+  board_id?: string | null;
   pull_request?: { number: number; url: string; status: string; draft: boolean } | null;
   worktree?: { id: string; path: string; branch: string; status: string } | null;
 }): TicketRow {
@@ -39,6 +41,7 @@ function makeTicket(overrides: {
     provider: overrides.provider ?? "github",
     project_id: overrides.project_id,
     project_path: overrides.project_path,
+    board_id: overrides.board_id !== undefined ? overrides.board_id : null,
     pull_request: overrides.pull_request !== undefined ? overrides.pull_request : null,
     worktree: overrides.worktree !== undefined ? overrides.worktree : null,
   };
@@ -883,6 +886,337 @@ describe("TicketList — duplicate ids across different projects", () => {
     expect(headers).toHaveLength(2);
     expect(headers[0].textContent).toContain("/repos/alpha");
     expect(headers[1].textContent).toContain("/repos/beta");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TicketList — board grouping (ticket #133)
+// ---------------------------------------------------------------------------
+
+describe("TicketList — board grouping", () => {
+  it("board mode: tickets from different projects sharing one board_id render under a single group", () => {
+    const tickets = [
+      makeTicket({ id: "1", project_id: "proj-a", project_path: "/repos/alpha", board_id: "github:acme/7" }),
+      makeTicket({ id: "2", project_id: "proj-b", project_path: "/repos/beta", board_id: "github:acme/7" }),
+    ];
+    const { presenter } = makePresenter();
+    const { container } = render(
+      <TicketList tickets={tickets} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} activeTicketId={null} viewMode="board" />
+    );
+
+    const headers = container.querySelectorAll(".project-group-header");
+    expect(headers).toHaveLength(1);
+    expect(container.querySelectorAll(".ticket-card")).toHaveLength(2);
+  });
+
+  it("board mode: two distinct board_ids produce two groups", () => {
+    const tickets = [
+      makeTicket({ id: "1", project_id: "proj-a", project_path: "/repos/alpha", board_id: "github:acme/7" }),
+      makeTicket({ id: "2", project_id: "proj-b", project_path: "/repos/beta", board_id: "github:acme/8" }),
+    ];
+    const { presenter } = makePresenter();
+    const { container } = render(
+      <TicketList tickets={tickets} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} activeTicketId={null} viewMode="board" />
+    );
+
+    const headers = container.querySelectorAll(".project-group-header");
+    expect(headers).toHaveLength(2);
+  });
+
+  it("same tickets in project mode still group by project_id (view modes are independent)", () => {
+    const tickets = [
+      makeTicket({ id: "1", project_id: "proj-a", project_path: "/repos/alpha", board_id: "github:acme/7" }),
+      makeTicket({ id: "2", project_id: "proj-b", project_path: "/repos/beta", board_id: "github:acme/7" }),
+    ];
+    const { presenter } = makePresenter();
+    const { container } = render(
+      <TicketList tickets={tickets} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} activeTicketId={null} viewMode="project" />
+    );
+
+    const headers = container.querySelectorAll(".project-group-header");
+    expect(headers).toHaveLength(2);
+  });
+
+  it("project mode is the default when viewMode prop is omitted (existing callers unaffected)", () => {
+    const tickets = [
+      makeTicket({ id: "1", project_id: "proj-a", project_path: "/repos/alpha" }),
+      makeTicket({ id: "2", project_id: "proj-b", project_path: "/repos/beta" }),
+    ];
+    const { presenter } = makePresenter();
+    const { container } = render(
+      <TicketList tickets={tickets} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} activeTicketId={null} />
+    );
+
+    const headers = container.querySelectorAll(".project-group-header");
+    expect(headers).toHaveLength(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TicketList — board grouping: no-board catch-all (ticket #133)
+// ---------------------------------------------------------------------------
+
+describe("TicketList — board grouping: no-board catch-all", () => {
+  it("board_id null lands in a group labelled exactly 'Ohne Board'", () => {
+    const tickets = [
+      makeTicket({ id: "1", project_id: "proj-a", project_path: "/repos/alpha", board_id: null }),
+    ];
+    const { presenter } = makePresenter();
+    const { container } = render(
+      <TicketList tickets={tickets} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} activeTicketId={null} viewMode="board" />
+    );
+
+    const headers = container.querySelectorAll(".project-group-header");
+    expect(headers).toHaveLength(1);
+    expect(headers[0].querySelector(".group-label")!.textContent).toBe("Ohne Board");
+  });
+
+  it("mix of null and non-null board_id yields a distinct catch-all group plus the board group", () => {
+    const tickets = [
+      makeTicket({ id: "1", project_id: "proj-a", project_path: "/repos/alpha", board_id: null }),
+      makeTicket({ id: "2", project_id: "proj-b", project_path: "/repos/beta", board_id: "github:acme/7" }),
+    ];
+    const { presenter } = makePresenter();
+    const { container } = render(
+      <TicketList tickets={tickets} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} activeTicketId={null} viewMode="board" />
+    );
+
+    const headers = container.querySelectorAll(".project-group-header");
+    expect(headers).toHaveLength(2);
+    const labels = Array.from(headers).map(h => h.querySelector(".group-label")!.textContent);
+    expect(labels).toContain("Ohne Board");
+    expect(labels).toContain("acme/7");
+  });
+
+  it("all tickets with null board_id collapse into a single 'Ohne Board' group with the correct count", () => {
+    const tickets = [
+      makeTicket({ id: "1", project_id: "proj-a", project_path: "/repos/alpha", board_id: null }),
+      makeTicket({ id: "2", project_id: "proj-b", project_path: "/repos/beta", board_id: null }),
+    ];
+    const { presenter } = makePresenter();
+    const { container } = render(
+      <TicketList tickets={tickets} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} activeTicketId={null} viewMode="board" />
+    );
+
+    const headers = container.querySelectorAll(".project-group-header");
+    expect(headers).toHaveLength(1);
+    expect(headers[0].querySelector(".group-label")!.textContent).toBe("Ohne Board");
+    expect(headers[0].querySelector(".group-count")!.textContent).toBe("2");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// boardLabel — strips provider prefix (ticket #133)
+// ---------------------------------------------------------------------------
+
+describe("boardLabel", () => {
+  it("strips everything up to and including the first colon", () => {
+    expect(boardLabel("github:acme/7")).toBe("acme/7");
+    expect(boardLabel("azuredevops:CoreTeam/Sprint Board")).toBe("CoreTeam/Sprint Board");
+  });
+
+  it("returns the raw value unchanged when there is no colon", () => {
+    expect(boardLabel("legacy-board")).toBe("legacy-board");
+  });
+
+  it("only strips up to the FIRST colon, preserving any subsequent colons", () => {
+    expect(boardLabel("azuredevops:Team:Sub/Board")).toBe("Team:Sub/Board");
+  });
+
+  it("a board group header renders the stripped label, not the raw board_id", () => {
+    const tickets = [
+      makeTicket({ id: "1", project_id: "proj-a", project_path: "/repos/alpha", board_id: "github:acme/7" }),
+    ];
+    const { presenter } = makePresenter();
+    const { container } = render(
+      <TicketList tickets={tickets} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} activeTicketId={null} viewMode="board" />
+    );
+
+    const label = container.querySelector(".project-group-header .group-label")!;
+    expect(label.textContent).toBe("acme/7");
+    expect(label.textContent).not.toBe("github:acme/7");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TicketList — per-view collapse isolation (ticket #133)
+// ---------------------------------------------------------------------------
+
+describe("TicketList — per-view collapse isolation", () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  afterEach(() => {
+    localStorage.clear();
+  });
+
+  it("clicking a board header writes the 'collapsed-boards' key, not 'collapsed-projects'", async () => {
+    const tickets = [
+      makeTicket({ id: "1", project_id: "proj-a", project_path: "/repos/alpha", board_id: "board-x" }),
+    ];
+    const { presenter } = makePresenter();
+    const setItemSpy = vi.spyOn(Storage.prototype, "setItem");
+
+    const { container } = render(
+      <TicketList tickets={tickets} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} activeTicketId={null} viewMode="board" />
+    );
+    const header = container.querySelector(".project-group-header") as HTMLElement;
+    await userEvent.click(header);
+
+    expect(setItemSpy).toHaveBeenCalledWith("collapsed-boards", JSON.stringify(["board-x"]));
+    expect(setItemSpy).not.toHaveBeenCalledWith("collapsed-projects", expect.anything());
+
+    setItemSpy.mockRestore();
+  });
+
+  it("clicking a project header (project mode) still writes the 'collapsed-projects' key", async () => {
+    const tickets = [
+      makeTicket({ id: "1", project_id: "proj-a", project_path: "/repos/alpha", board_id: "board-x" }),
+    ];
+    const { presenter } = makePresenter();
+    const setItemSpy = vi.spyOn(Storage.prototype, "setItem");
+
+    const { container } = render(
+      <TicketList tickets={tickets} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} activeTicketId={null} viewMode="project" />
+    );
+    const header = container.querySelector(".project-group-header") as HTMLElement;
+    await userEvent.click(header);
+
+    expect(setItemSpy).toHaveBeenCalledWith("collapsed-projects", JSON.stringify(["proj-a"]));
+    expect(setItemSpy).not.toHaveBeenCalledWith("collapsed-boards", expect.anything());
+
+    setItemSpy.mockRestore();
+  });
+
+  it("pre-seeding 'collapsed-boards' starts the matching board group collapsed while project view is unaffected", () => {
+    localStorage.setItem("collapsed-boards", JSON.stringify(["board-x"]));
+
+    const tickets = [
+      makeTicket({ id: "1", project_id: "proj-a", project_path: "/repos/alpha", board_id: "board-x" }),
+      makeTicket({ id: "2", project_id: "proj-a", project_path: "/repos/alpha", board_id: "board-x" }),
+    ];
+    const { presenter } = makePresenter();
+
+    const boardRender = render(
+      <TicketList tickets={tickets} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} activeTicketId={null} viewMode="board" />
+    );
+    const boardHeader = boardRender.container.querySelector(".project-group-header") as HTMLElement;
+    expect(boardHeader.classList.contains("project-group-header--collapsed")).toBe(true);
+    boardRender.unmount();
+
+    const projectRender = render(
+      <TicketList tickets={tickets} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} activeTicketId={null} viewMode="project" />
+    );
+    const projectHeader = projectRender.container.querySelector(".project-group-header") as HTMLElement;
+    expect(projectHeader.classList.contains("project-group-header--collapsed")).toBe(false);
+  });
+
+  it("corrupt 'collapsed-boards' value: mounts without throwing and defaults to expanded", () => {
+    localStorage.setItem("collapsed-boards", "not-valid-json{{{");
+
+    const tickets = [
+      makeTicket({ id: "1", project_id: "proj-a", project_path: "/repos/alpha", board_id: "board-x" }),
+    ];
+    const { presenter } = makePresenter();
+
+    expect(() => {
+      const { container } = render(
+        <TicketList tickets={tickets} presenter={presenter} client={makeClient()} onRefresh={vi.fn()} activeTicketId={null} viewMode="board" />
+      );
+      const headers = container.querySelectorAll(".project-group-header");
+      expect(headers).toHaveLength(1);
+      expect(headers[0].classList.contains("project-group-header--collapsed")).toBe(false);
+    }).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TicketBoard — view mode switcher (ticket #133)
+// ---------------------------------------------------------------------------
+
+describe("TicketBoard — view mode switcher", () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  afterEach(() => {
+    localStorage.clear();
+  });
+
+  function boardTickets(): TicketRow[] {
+    return [
+      makeTicket({ id: "1", project_id: "proj-a", project_path: "/repos/alpha", board_id: "github:acme/7" }),
+      makeTicket({ id: "2", project_id: "proj-b", project_path: "/repos/beta", board_id: "github:acme/7" }),
+    ];
+  }
+
+  function renderBoard(tickets: TicketRow[]) {
+    const { presenter } = makePresenter();
+    return render(
+      <TicketBoard
+        tickets={tickets}
+        status="OK"
+        ticketCount={String(tickets.length)}
+        presenter={presenter}
+        client={makeClient()}
+        onRefresh={vi.fn()}
+        activeTicketId={null}
+      />
+    );
+  }
+
+  it("defaults to project mode when no stored preference exists", () => {
+    const { container } = renderBoard(boardTickets());
+    expect(container.querySelectorAll(".project-group-header")).toHaveLength(2);
+  });
+
+  it("clicking 'Nach Boards' switches grouping to board mode and persists the choice to localStorage", async () => {
+    const { container } = renderBoard(boardTickets());
+    const boardBtn = within(container).getByText("Nach Boards");
+    await userEvent.click(boardBtn);
+
+    expect(container.querySelectorAll(".project-group-header")).toHaveLength(1);
+    expect(localStorage.getItem("ticket-view-mode")).toBe("board");
+  });
+
+  it("choice persists across restart: unmount + re-render restores board mode from localStorage", async () => {
+    const tickets = boardTickets();
+    const { container, unmount } = renderBoard(tickets);
+    await userEvent.click(within(container).getByText("Nach Boards"));
+    expect(container.querySelectorAll(".project-group-header")).toHaveLength(1);
+    unmount();
+
+    const { container: container2 } = renderBoard(tickets);
+    expect(container2.querySelectorAll(".project-group-header")).toHaveLength(1);
+  });
+
+  it("absent stored key defaults to project mode", () => {
+    const { container } = renderBoard(boardTickets());
+    expect(container.querySelectorAll(".project-group-header")).toHaveLength(2);
+  });
+
+  it("a corrupt/unknown stored view mode value falls back to project mode", () => {
+    localStorage.setItem("ticket-view-mode", "bogus-value");
+    const { container } = renderBoard(boardTickets());
+    expect(container.querySelectorAll(".project-group-header")).toHaveLength(2);
+  });
+
+  it("the active mode's switcher button carries an --active modifier class", () => {
+    const { container } = renderBoard(boardTickets());
+    const projectBtn = within(container).getByText("Nach Projekten");
+    const boardBtn = within(container).getByText("Nach Boards");
+    expect(projectBtn.className).toContain("--active");
+    expect(boardBtn.className).not.toContain("--active");
+  });
+
+  it("clicking 'Nach Boards' moves the --active modifier onto the board button", async () => {
+    const { container } = renderBoard(boardTickets());
+    const boardBtn = within(container).getByText("Nach Boards");
+    await userEvent.click(boardBtn);
+
+    expect(within(container).getByText("Nach Boards").className).toContain("--active");
+    expect(within(container).getByText("Nach Projekten").className).not.toContain("--active");
   });
 });
 
