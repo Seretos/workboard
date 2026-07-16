@@ -57,6 +57,7 @@ body {
 /* ---- Panel header ---- */
 .panel-header {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
   gap: 8px;
   padding: 18px 18px 12px;
@@ -81,6 +82,57 @@ body {
   padding: 1px 7px;
   min-width: 20px;
   text-align: center;
+}
+
+/* ---- View mode switcher ---- */
+.view-mode-switch {
+  display: flex;
+  margin-left: auto;
+  gap: 2px;
+}
+
+.view-mode-btn {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-text-muted);
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  padding: 3px 8px;
+  cursor: pointer;
+}
+
+.view-mode-btn--active {
+  color: var(--color-text);
+  background: var(--color-badge-bg);
+}
+
+/* ---- Filter settings ---- */
+.filter-settings {
+  flex-basis: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.filter-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+
+.filter-unresolved-banner {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-text-muted);
+  background: var(--color-badge-bg);
+  border-radius: 6px;
+  padding: 6px 8px;
 }
 
 /* ---- Ticket list ---- */

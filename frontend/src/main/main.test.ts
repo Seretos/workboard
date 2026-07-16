@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import * as path from "path";
 import * as fs from "fs";
 
@@ -82,7 +82,10 @@ vi.mock("child_process", () => ({
     stdout: { on: vi.fn() },
     stderr: { on: vi.fn() },
     on: vi.fn(),
+    pid: 4242,
+    kill: vi.fn(),
   })),
+  execFile: vi.fn(),
 }));
 
 // ---------------------------------------------------------------------------
@@ -560,6 +563,39 @@ describe("createTray", () => {
     const trayInstance = TrayCtor.mock.results[TrayCtor.mock.results.length - 1].value;
     expect(trayInstance.setToolTip).toHaveBeenCalledWith("Workboard");
   });
+
+  it("shows a disabled 'Version <x.y.z>' item above a separator, above the still-wired 'Beenden' item", async () => {
+    const electron = await import("electron");
+
+    const mockWin = {
+      isVisible: vi.fn(() => false),
+      show: vi.fn(),
+      hide: vi.fn(),
+    };
+
+    const { createTray } = await import("./main.js");
+    createTray(mockWin as any);
+
+    const MenuMock = electron.Menu as unknown as { buildFromTemplate: ReturnType<typeof vi.fn> };
+    const lastTemplate = MenuMock.buildFromTemplate.mock.calls[
+      MenuMock.buildFromTemplate.mock.calls.length - 1
+    ][0] as Array<{ label?: string; type?: string; enabled?: boolean; click?: () => void }>;
+
+    const versionIndex = lastTemplate.findIndex((item) => item.label === "Version 0.0.0");
+    expect(versionIndex).toBeGreaterThanOrEqual(0);
+    expect(lastTemplate[versionIndex].enabled).toBe(false);
+
+    const beendenIndex = lastTemplate.findIndex((item) => item.label === "Beenden");
+    expect(beendenIndex).toBeGreaterThan(versionIndex);
+
+    // A separator sits between the version item and "Beenden".
+    expect(lastTemplate[versionIndex + 1].type).toBe("separator");
+
+    // "Beenden" is still present and still wired to quit.
+    (electron.app.quit as ReturnType<typeof vi.fn>).mockClear();
+    lastTemplate[beendenIndex].click!();
+    expect(electron.app.quit).toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -827,8 +863,14 @@ describe("createDetailWindow", () => {
 // spawnBackend — env wiring
 // ---------------------------------------------------------------------------
 describe("spawnBackend", () => {
+  const originalPlatform = process.platform;
+
   beforeEach(() => {
     vi.resetModules();
+  });
+
+  afterEach(() => {
+    Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
   });
 
   it("dev mode → spawn env does NOT set PROJECT_ISSUES_CONFIG", async () => {
@@ -956,6 +998,318 @@ describe("spawnBackend", () => {
         process.env.WORKTREE_SETUP_LOWER_PRIORITY = originalLowerPriority;
       }
     }
+  });
+
+  // -------------------------------------------------------------------------
+  // #130: the backend is a PyInstaller onefile bootloader whose real uvicorn
+  // process is a grandchild. On POSIX, detaching the spawned process makes it
+  // a process-group leader so killBackendTree() can signal the whole group
+  // via the negative PID. Windows instead relies on `taskkill /T`, which
+  // walks the process tree itself — detaching is neither needed nor used.
+  // -------------------------------------------------------------------------
+  it("posix: spawn is called with detached: true", async () => {
+    const electron = await import("electron");
+    // @ts-ignore
+    electron.app.isPackaged = false;
+
+    Object.defineProperty(process, "platform", { value: "linux", configurable: true });
+
+    const fsMock = await import("fs");
+    (fsMock.existsSync as ReturnType<typeof vi.fn>).mockReturnValue(true);
+
+    const cpMock = await import("child_process");
+    const fakeChild = {
+      stdout: { on: vi.fn() },
+      stderr: { on: vi.fn() },
+      on: vi.fn(),
+    };
+    (cpMock.spawn as ReturnType<typeof vi.fn>).mockReset();
+    (cpMock.spawn as ReturnType<typeof vi.fn>).mockReturnValue(fakeChild);
+
+    const { spawnBackend } = await import("./main.js");
+    spawnBackend().catch(() => {});
+
+    const spawnOpts = (cpMock.spawn as ReturnType<typeof vi.fn>).mock.calls[0][2];
+    expect(spawnOpts.detached).toBe(true);
+  });
+
+  it("win32: spawn is called with detached: false", async () => {
+    const electron = await import("electron");
+    // @ts-ignore
+    electron.app.isPackaged = false;
+
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+
+    const fsMock = await import("fs");
+    (fsMock.existsSync as ReturnType<typeof vi.fn>).mockReturnValue(true);
+
+    const cpMock = await import("child_process");
+    const fakeChild = {
+      stdout: { on: vi.fn() },
+      stderr: { on: vi.fn() },
+      on: vi.fn(),
+    };
+    (cpMock.spawn as ReturnType<typeof vi.fn>).mockReset();
+    (cpMock.spawn as ReturnType<typeof vi.fn>).mockReturnValue(fakeChild);
+
+    const { spawnBackend } = await import("./main.js");
+    spawnBackend().catch(() => {});
+
+    const spawnOpts = (cpMock.spawn as ReturnType<typeof vi.fn>).mock.calls[0][2];
+    expect(spawnOpts.detached).toBe(false);
+  });
+
+  // -------------------------------------------------------------------------
+  // #130: the handshake-timeout branch (the setTimeout(..., 5000) that fires
+  // when the backend never emits its BACKEND_PORT=<n> line) must also route
+  // through killBackendTree(), not a bare child.kill() — otherwise a backend
+  // that hangs before handshaking still leaks its uvicorn grandchild.
+  // -------------------------------------------------------------------------
+  it("handshake timeout: routes through killBackendTree (win32 taskkill fires, not bare child.kill())", async () => {
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+
+    const electron = await import("electron");
+    // @ts-ignore
+    electron.app.isPackaged = false;
+
+    const fsMock = await import("fs");
+    (fsMock.existsSync as ReturnType<typeof vi.fn>).mockReturnValue(true);
+
+    const cpMock = await import("child_process");
+    const fakeChild = {
+      stdout: { on: vi.fn() },
+      stderr: { on: vi.fn() },
+      on: vi.fn(),
+      pid: 7777,
+      kill: vi.fn(),
+    };
+    (cpMock.spawn as ReturnType<typeof vi.fn>).mockReset();
+    (cpMock.spawn as ReturnType<typeof vi.fn>).mockReturnValue(fakeChild);
+    (cpMock.execFile as ReturnType<typeof vi.fn>).mockClear();
+
+    vi.useFakeTimers();
+    try {
+      const { spawnBackend } = await import("./main.js");
+      const promise = spawnBackend();
+      // Register the expected-rejection assertion before advancing timers so
+      // the rejection is never left unhandled.
+      const rejection = expect(promise).rejects.toThrow("Backend handshake timed out after 5 s");
+
+      // The readline mock's `on` never invokes its callback, so the backend
+      // never "emits" BACKEND_PORT=<n> — the handshake never completes and
+      // the 5 s timeout branch fires.
+      await vi.advanceTimersByTimeAsync(5000);
+
+      await rejection;
+
+      expect(cpMock.execFile).toHaveBeenCalledWith("taskkill", ["/pid", "7777", "/T", "/F"]);
+      expect(fakeChild.kill).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// killBackendTree — #130: tray "Beenden" must tear down the entire backend
+// process tree, not just the immediate bootloader process. The backend is a
+// PyInstaller onefile build, so child.kill() only signals the bootloader,
+// leaving the real uvicorn grandchild orphaned (this is the reported bug).
+// ---------------------------------------------------------------------------
+describe("killBackendTree", () => {
+  const originalPlatform = process.platform;
+
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  afterEach(() => {
+    Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+  });
+
+  it("null child is a no-op: no execFile call, no throw", async () => {
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+
+    const cpMock = await import("child_process");
+    (cpMock.execFile as ReturnType<typeof vi.fn>).mockClear();
+
+    const { killBackendTree } = await import("./main.js");
+
+    expect(() => killBackendTree(null)).not.toThrow();
+    expect(cpMock.execFile).not.toHaveBeenCalled();
+  });
+
+  it("win32: calls execFile('taskkill', ['/pid', pid, '/T', '/F'])", async () => {
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+
+    const cpMock = await import("child_process");
+    (cpMock.execFile as ReturnType<typeof vi.fn>).mockClear();
+
+    const { killBackendTree } = await import("./main.js");
+    const fakeChild = { pid: 4242, kill: vi.fn() } as unknown as import("child_process").ChildProcess;
+
+    killBackendTree(fakeChild);
+
+    expect(cpMock.execFile).toHaveBeenCalledWith("taskkill", ["/pid", "4242", "/T", "/F"]);
+    expect((fakeChild as unknown as { kill: ReturnType<typeof vi.fn> }).kill).not.toHaveBeenCalled();
+  });
+
+  it("win32 with undefined pid: falls back to child.kill()", async () => {
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+
+    const cpMock = await import("child_process");
+    (cpMock.execFile as ReturnType<typeof vi.fn>).mockClear();
+
+    const { killBackendTree } = await import("./main.js");
+    const fakeKill = vi.fn();
+    const fakeChild = { pid: undefined, kill: fakeKill } as unknown as import("child_process").ChildProcess;
+
+    killBackendTree(fakeChild);
+
+    expect(fakeKill).toHaveBeenCalled();
+    expect(cpMock.execFile).not.toHaveBeenCalled();
+  });
+
+  it("win32: execFile/taskkill throwing falls back to child.kill()", async () => {
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+
+    const cpMock = await import("child_process");
+    (cpMock.execFile as ReturnType<typeof vi.fn>).mockImplementationOnce(() => {
+      throw new Error("taskkill not found");
+    });
+
+    const { killBackendTree } = await import("./main.js");
+    const fakeKill = vi.fn();
+    const fakeChild = { pid: 4242, kill: fakeKill } as unknown as import("child_process").ChildProcess;
+
+    killBackendTree(fakeChild);
+
+    expect(fakeKill).toHaveBeenCalled();
+  });
+
+  it("posix: calls process.kill(-pid, 'SIGTERM')", async () => {
+    Object.defineProperty(process, "platform", { value: "linux", configurable: true });
+
+    const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true as never);
+
+    const { killBackendTree } = await import("./main.js");
+    const fakeKill = vi.fn();
+    const fakeChild = { pid: 4242, kill: fakeKill } as unknown as import("child_process").ChildProcess;
+
+    killBackendTree(fakeChild);
+
+    expect(killSpy).toHaveBeenCalledWith(-4242, "SIGTERM");
+    expect(fakeKill).not.toHaveBeenCalled();
+
+    killSpy.mockRestore();
+  });
+
+  it("posix with undefined pid: falls back to child.kill()", async () => {
+    Object.defineProperty(process, "platform", { value: "linux", configurable: true });
+
+    const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true as never);
+
+    const { killBackendTree } = await import("./main.js");
+    const fakeKill = vi.fn();
+    const fakeChild = { pid: undefined, kill: fakeKill } as unknown as import("child_process").ChildProcess;
+
+    killBackendTree(fakeChild);
+
+    expect(fakeKill).toHaveBeenCalled();
+    expect(killSpy).not.toHaveBeenCalled();
+
+    killSpy.mockRestore();
+  });
+
+  it("posix: process.kill throwing falls back to child.kill()", async () => {
+    Object.defineProperty(process, "platform", { value: "linux", configurable: true });
+
+    const killSpy = vi.spyOn(process, "kill").mockImplementation(() => {
+      throw new Error("ESRCH");
+    });
+
+    const { killBackendTree } = await import("./main.js");
+    const fakeKill = vi.fn();
+    const fakeChild = { pid: 4242, kill: fakeKill } as unknown as import("child_process").ChildProcess;
+
+    killBackendTree(fakeChild);
+
+    expect(fakeKill).toHaveBeenCalled();
+
+    killSpy.mockRestore();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// before-quit — #130: the tray "Beenden" choke point must route the kill
+// through killBackendTree() (tree-kill), not backendChild.kill() (bootloader
+// only), so the real uvicorn grandchild does not survive as an orphan.
+// ---------------------------------------------------------------------------
+describe("before-quit choke point", () => {
+  const originalPlatform = process.platform;
+
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  afterEach(() => {
+    Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+  });
+
+  it("win32: before-quit handler routes through killBackendTree (taskkill fires on the spawned backend)", async () => {
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+
+    const electron = await import("electron");
+    // @ts-ignore
+    electron.app.requestSingleInstanceLock = vi.fn(() => true);
+    (electron.app.on as ReturnType<typeof vi.fn>).mockClear();
+
+    const fsMock = await import("fs");
+    (fsMock.existsSync as ReturnType<typeof vi.fn>).mockReturnValue(true);
+
+    const cpMock = await import("child_process");
+    const fakeChild = {
+      stdout: { on: vi.fn() },
+      stderr: { on: vi.fn() },
+      on: vi.fn(),
+      pid: 9999,
+      kill: vi.fn(),
+    };
+    (cpMock.spawn as ReturnType<typeof vi.fn>).mockReset();
+    (cpMock.spawn as ReturnType<typeof vi.fn>).mockReturnValue(fakeChild);
+    (cpMock.execFile as ReturnType<typeof vi.fn>).mockClear();
+
+    const { spawnBackend } = await import("./main.js");
+    // The Promise executor runs synchronously, so the module-level
+    // backendChild reference is set before this line returns even though
+    // the handshake itself never resolves in this test.
+    spawnBackend().catch(() => {});
+
+    const onSpy = electron.app.on as ReturnType<typeof vi.fn>;
+    const beforeQuitCall = onSpy.mock.calls.find((c: unknown[]) => c[0] === "before-quit");
+    expect(beforeQuitCall).toBeDefined();
+
+    (beforeQuitCall![1] as () => void)();
+
+    expect(cpMock.execFile).toHaveBeenCalledWith("taskkill", ["/pid", "9999", "/T", "/F"]);
+    expect(fakeChild.kill).not.toHaveBeenCalled();
+  });
+
+  it("before-quit handler does not throw when backendChild is still null (no backend spawned yet)", async () => {
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+
+    const electron = await import("electron");
+    // @ts-ignore
+    electron.app.requestSingleInstanceLock = vi.fn(() => true);
+    (electron.app.on as ReturnType<typeof vi.fn>).mockClear();
+
+    await import("./main.js");
+
+    const onSpy = electron.app.on as ReturnType<typeof vi.fn>;
+    const beforeQuitCall = onSpy.mock.calls.find((c: unknown[]) => c[0] === "before-quit");
+    expect(beforeQuitCall).toBeDefined();
+
+    expect(() => (beforeQuitCall![1] as () => void)()).not.toThrow();
   });
 });
 

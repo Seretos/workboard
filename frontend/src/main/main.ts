@@ -2,7 +2,7 @@ import { app, BrowserWindow, dialog, ipcMain, screen, shell, Tray, Menu } from "
 import * as path from "path";
 import * as fs from "fs";
 import * as readline from "readline";
-import { spawn, ChildProcess } from "child_process";
+import { spawn, execFile, ChildProcess } from "child_process";
 
 // Module-level child process reference so shutdown can kill it.
 let backendChild: ChildProcess | null = null;
@@ -131,6 +131,46 @@ export function resolveBackendBinary(): string {
 }
 
 // ---------------------------------------------------------------------------
+// killBackendTree — tears down the ENTIRE backend process tree, not just the
+// immediate child. The backend binary is a PyInstaller *onefile* build: the
+// spawned process is a bootloader that execs/spawns the real uvicorn process
+// as a grandchild. child.kill() only signals the bootloader — on Windows that
+// is TerminateProcess, which does NOT propagate to descendants, so the real
+// backend survives as an orphan. Exported for testability.
+// ---------------------------------------------------------------------------
+export function killBackendTree(child: ChildProcess | null): void {
+  if (child === null) {
+    return;
+  }
+
+  if (process.platform === "win32") {
+    if (child.pid === undefined) {
+      child.kill();
+      return;
+    }
+    try {
+      // /T kills the whole process tree, /F forces termination.
+      execFile("taskkill", ["/pid", String(child.pid), "/T", "/F"]);
+    } catch (err) {
+      child.kill();
+    }
+    return;
+  }
+
+  // POSIX: spawnBackend() launches the backend detached (process-group
+  // leader), so signalling the negative PID reaches the whole group.
+  if (child.pid === undefined) {
+    child.kill();
+    return;
+  }
+  try {
+    process.kill(-child.pid, "SIGTERM");
+  } catch (err) {
+    child.kill();
+  }
+}
+
+// ---------------------------------------------------------------------------
 // spawnBackend — spawns the binary, waits for BACKEND_PORT=<n> handshake.
 // ---------------------------------------------------------------------------
 export function spawnBackend(): Promise<number> {
@@ -154,6 +194,10 @@ export function spawnBackend(): Promise<number> {
     const child = spawn(binaryPath, [], {
       stdio: ["ignore", "pipe", "pipe"],
       env: childEnv,
+      // POSIX only: makes the backend a process-group leader so
+      // killBackendTree() can signal the whole group via the negative PID.
+      // Not used on Windows — taskkill /T walks the process tree instead.
+      detached: process.platform !== "win32",
     });
     backendChild = child;
 
@@ -162,7 +206,7 @@ export function spawnBackend(): Promise<number> {
     const timer = setTimeout(() => {
       if (!handshakeDone) {
         handshakeDone = true;
-        child.kill();
+        killBackendTree(child);
         reject(new Error("Backend handshake timed out after 5 s"));
       }
     }, 5000);
@@ -400,6 +444,8 @@ export function createTray(
   t.setToolTip("Workboard");
 
   const contextMenu = Menu.buildFromTemplate([
+    { label: `Version ${app.getVersion()}`, enabled: false },
+    { type: "separator" },
     {
       label: "Beenden",
       click: () => {
@@ -493,9 +539,7 @@ if (!gotSingleInstanceLock) {
   // does not block Electron's teardown sequence.
   app.on("before-quit", () => {
     isQuitting = true;
-    if (backendChild) {
-      backendChild.kill();
-    }
+    killBackendTree(backendChild);
   });
 
   // Guard: only run startup code when not under test (vitest sets VITEST env var).

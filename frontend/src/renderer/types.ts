@@ -8,8 +8,10 @@ export interface TicketRow {
   body?: string;
   labels: string[];
   provider: string;
+  assignees: string[];
   project_id: string;
   project_path: string;
+  board_id: string | null;
   pull_request?: {
     number: number;
     url: string;
@@ -30,9 +32,16 @@ export interface PollErrors {
   failed_projects: string[];
 }
 
+export interface Viewer {
+  github: string | null;
+  gitlab: string | null;
+  azuredevops: string | null;
+}
+
 export interface TicketsResponse {
   tickets: TicketRow[];
   poll_errors: PollErrors | null;
+  viewer: Viewer;
 }
 
 export interface DetailTicket {
