@@ -11,8 +11,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import subprocess
 import time
 from dataclasses import asdict
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
@@ -83,6 +85,63 @@ def _branch_slug(title: str) -> str:
     return s[:60]
 
 
+def _is_clean_worktree(path: str) -> bool:
+    """True if `path` has nothing on disk, or has no uncommitted changes."""
+    if not Path(path).exists():
+        return True
+    try:
+        proc = subprocess.run(
+            ["git", "-C", path, "status", "--porcelain"],
+            capture_output=True, text=True, timeout=30,
+        )
+    except Exception:  # noqa: BLE001 — best-effort; caller treats this as "not clean"
+        return False
+    return proc.returncode == 0 and not proc.stdout.strip()
+
+
+# Diagnosed 2026-07-13: BranchAlreadyCheckedOutError fires when `git worktree
+# add` refuses because git already has the branch checked out somewhere —
+# most commonly a worktree left behind by a *previous* create() whose backend
+# process crashed/was killed (see 8a63a86) after `git worktree add` succeeded
+# but before the WorktreeRecord was persisted to state.yaml. Git remembers
+# the checkout; our state store doesn't, so create() sees no conflict, retries
+# the same `git worktree add`, and git rejects it — surfacing a raw
+# "branch_already_checked_out" error the user had to resolve by hand.
+#
+# This reclaims that leftover checkout so the request can just succeed:
+#   - prunable=True  → the on-disk directory is already gone; `git worktree
+#     prune` clears git's stale bookkeeping, no data at risk.
+#   - prunable=False → the directory is still there. Only reclaim it if it has
+#     no uncommitted changes (adopt() into our state store, then remove() it
+#     properly — ports/pids/branch handling included). A dirty leftover is
+#     left alone and surfaces as the normal 409 for manual inspection.
+def _reclaim_stale_worktree(manager: "WorktreeManager", local_path: str, exc: "BranchAlreadyCheckedOutError") -> bool:
+    """Best-effort clean up of a worktree git knows about but our state store
+    doesn't. Returns True if `create()` can safely be retried."""
+    if exc.prunable:
+        try:
+            subprocess.run(
+                ["git", "-C", local_path, "worktree", "prune"],
+                capture_output=True, text=True, timeout=30, check=True,
+            )
+            return True
+        except Exception:  # noqa: BLE001 — best-effort; fall through to the normal 409
+            return False
+
+    if not _is_clean_worktree(exc.path):
+        return False
+
+    try:
+        manager.adopt(local_path)
+        record = next((r for r in manager.list() if r.path == exc.path), None)
+        if record is None:
+            return False
+        manager.remove(record.id, force=True, kill_blocking_processes=True)
+        return True
+    except Exception:  # noqa: BLE001 — best-effort; fall through to the normal 409
+        return False
+
+
 class CreateWorktreeRequest(BaseModel):
     project_id: str
     ticket_number: int
@@ -115,48 +174,68 @@ async def create_worktree(req: CreateWorktreeRequest) -> dict:
     started = time.monotonic()
     try:
         manager = WorktreeManager()
-        record = await asyncio.wait_for(
-            asyncio.to_thread(manager.create, local_path, branch, base=project.default_branch),
-            timeout=_WORKTREE_OP_TIMEOUT_S,
-        )
-    except HTTPException:
-        raise
-    except asyncio.TimeoutError as exc:
-        log.warning(
-            "worktree create timed out after %.1fs (limit %ds): project=%s branch=%s — "
-            "backend thread keeps running in the background and cannot be cancelled; "
-            "check the worktree's setup log under ~/.agent-worktree/logs/",
-            time.monotonic() - started, _WORKTREE_OP_TIMEOUT_S, req.project_id, branch,
-        )
-        raise HTTPException(
-            status_code=504,
-            detail=(
-                f"Worktree creation for branch '{branch}' timed out after "
-                f"{_WORKTREE_OP_TIMEOUT_S}s. The underlying operation may still be "
-                f"running in the background — check the setup log under "
-                f"~/.agent-worktree/logs/ before retrying."
-            ),
-        ) from exc
-    except (DuplicateWorktreeError, BranchAlreadyCheckedOutError, DirtyWorktreeError) as exc:
-        log.warning("worktree create rejected after %.1fs: %s", time.monotonic() - started, exc)
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except (BranchNotFoundError, InvalidRepoError, WorktreeError) as exc:
-        log.warning("worktree create failed after %.1fs: %s", time.monotonic() - started, exc)
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except SetupFailedError as exc:
-        log.warning("worktree setup step failed after %.1fs: %s", time.monotonic() - started, exc)
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                f"Worktree '{exc.worktree_id}' was created but setup step "
-                f"'{exc.step_name}' (index {exc.step_index}) failed with "
-                f"returncode {exc.returncode}. "
-                f"See log: {exc.log_path}"
-            ),
-        ) from exc
     except Exception as exc:
-        log.warning("worktree create failed unexpectedly after %.1fs: %s", time.monotonic() - started, exc)
+        log.warning("worktree manager init failed after %.1fs: %s", time.monotonic() - started, exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    healed_once = False
+    while True:
+        try:
+            record = await asyncio.wait_for(
+                asyncio.to_thread(manager.create, local_path, branch, base=project.default_branch),
+                timeout=_WORKTREE_OP_TIMEOUT_S,
+            )
+            break
+        except HTTPException:
+            raise
+        except asyncio.TimeoutError as exc:
+            log.warning(
+                "worktree create timed out after %.1fs (limit %ds): project=%s branch=%s — "
+                "backend thread keeps running in the background and cannot be cancelled; "
+                "check the worktree's setup log under ~/.agent-worktree/logs/",
+                time.monotonic() - started, _WORKTREE_OP_TIMEOUT_S, req.project_id, branch,
+            )
+            raise HTTPException(
+                status_code=504,
+                detail=(
+                    f"Worktree creation for branch '{branch}' timed out after "
+                    f"{_WORKTREE_OP_TIMEOUT_S}s. The underlying operation may still be "
+                    f"running in the background — check the setup log under "
+                    f"~/.agent-worktree/logs/ before retrying."
+                ),
+            ) from exc
+        except BranchAlreadyCheckedOutError as exc:
+            if not healed_once and await asyncio.to_thread(_reclaim_stale_worktree, manager, local_path, exc):
+                healed_once = True
+                log.warning(
+                    "worktree create found branch '%s' already checked out at '%s' "
+                    "outside our tracked state (likely left behind by a crashed prior "
+                    "create) — reclaimed it and retrying",
+                    exc.branch, exc.path,
+                )
+                continue
+            log.warning("worktree create rejected after %.1fs: %s", time.monotonic() - started, exc)
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except (DuplicateWorktreeError, DirtyWorktreeError) as exc:
+            log.warning("worktree create rejected after %.1fs: %s", time.monotonic() - started, exc)
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except (BranchNotFoundError, InvalidRepoError, WorktreeError) as exc:
+            log.warning("worktree create failed after %.1fs: %s", time.monotonic() - started, exc)
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except SetupFailedError as exc:
+            log.warning("worktree setup step failed after %.1fs: %s", time.monotonic() - started, exc)
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Worktree '{exc.worktree_id}' was created but setup step "
+                    f"'{exc.step_name}' (index {exc.step_index}) failed with "
+                    f"returncode {exc.returncode}. "
+                    f"See log: {exc.log_path}"
+                ),
+            ) from exc
+        except Exception as exc:
+            log.warning("worktree create failed unexpectedly after %.1fs: %s", time.monotonic() - started, exc)
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     log.info("worktree created in %.1fs: id=%s path=%s", time.monotonic() - started, record.id, record.path)
     return asdict(record)
