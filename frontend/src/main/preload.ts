@@ -5,7 +5,7 @@ import { contextBridge, ipcRenderer } from "electron";
 // in the renderer.
 
 contextBridge.exposeInMainWorld("appInfo", {
-  getVersion: (): string => process.env.npm_package_version ?? "0.0.0",
+  getVersion: (): Promise<string> => ipcRenderer.invoke("appInfo.getVersion"),
 });
 
 // Backend fetch wrapper — renderer never receives the raw base URL.
