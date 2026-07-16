@@ -4,7 +4,7 @@ import { renderHook, act } from "@testing-library/react";
 import { useTicketPolling, POLL_INTERVAL_MS } from "./useTicketPolling";
 import type { TicketsClient } from "../client/TicketsClient";
 import type { DetailPresenter } from "../detail/DetailPresenter";
-import type { DetailTicket } from "../types";
+import type { DetailTicket, Viewer } from "../types";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -29,14 +29,21 @@ function makeTicket(overrides: {
   };
 }
 
-function makeSuccessResponse(tickets: ReturnType<typeof makeTicket>[]) {
-  return { ok: true, status: 200, data: { tickets, poll_errors: null } };
+function makeSuccessResponse(tickets: ReturnType<typeof makeTicket>[], viewer?: Viewer) {
+  return {
+    ok: true,
+    status: 200,
+    data: viewer !== undefined
+      ? { tickets, poll_errors: null, viewer }
+      : { tickets, poll_errors: null },
+  };
 }
 
 function makeRateLimitResponse(
   tickets: ReturnType<typeof makeTicket>[],
   retry_after: number | null,
-  failed_projects: string[] = []
+  failed_projects: string[] = [],
+  viewer?: Viewer
 ) {
   return {
     ok: true,
@@ -44,6 +51,7 @@ function makeRateLimitResponse(
     data: {
       tickets,
       poll_errors: { rate_limited: true, retry_after, failed_projects },
+      ...(viewer !== undefined ? { viewer } : {}),
     },
   };
 }
@@ -844,5 +852,78 @@ describe("useTicketPolling — no re-open after close (ticket #91 regression)", 
 
     // The ticket IS in the poll response, but getActiveId() returns null — open must not be called.
     expect(presenter.open).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// useTicketPolling — viewer threading (ticket #134)
+// ---------------------------------------------------------------------------
+
+describe("useTicketPolling — viewer", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("fetch resolves with a viewer map: PollingState.viewer equals it", async () => {
+    const viewer: Viewer = { github: "octocat", gitlab: null, azuredevops: null };
+    const ticket = makeTicket({ id: "1", project_id: "proj-a", project_path: "/repos/alpha" });
+    const fetchJson = vi.fn().mockResolvedValue(makeSuccessResponse([ticket], viewer));
+    const client = makeMockClient(fetchJson);
+    const presenter = makeMockPresenter();
+
+    const { result } = renderHook(() => useTicketPolling(client, presenter));
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(result.current.viewer).toEqual(viewer);
+  });
+
+  it("response omitting viewer: PollingState.viewer defaults to all-null (not undefined)", async () => {
+    const ticket = makeTicket({ id: "1", project_id: "proj-a", project_path: "/repos/alpha" });
+    const fetchJson = vi.fn().mockResolvedValue(makeSuccessResponse([ticket]));
+    const client = makeMockClient(fetchJson);
+    const presenter = makeMockPresenter();
+
+    const { result } = renderHook(() => useTicketPolling(client, presenter));
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(result.current.viewer).toEqual({ github: null, gitlab: null, azuredevops: null });
+  });
+
+  it("a rate-limited poll preserves the last known viewer instead of clobbering it to null", async () => {
+    vi.useFakeTimers();
+
+    const viewer: Viewer = { github: "octocat", gitlab: null, azuredevops: null };
+    const ticket = makeTicket({ id: "1", project_id: "proj-a", project_path: "/repos/alpha" });
+    const fetchJson = vi
+      .fn()
+      .mockResolvedValueOnce(makeSuccessResponse([ticket], viewer))
+      .mockResolvedValueOnce(makeRateLimitResponse([], 60, []));
+    let capturedCrashCb: ((code: number | null) => void) | undefined;
+    const onBackendCrashed = vi.fn((cb: (code: number | null) => void) => {
+      capturedCrashCb = cb;
+    });
+    const client = makeMockClient(fetchJson, onBackendCrashed);
+    const presenter = makeMockPresenter();
+
+    const { result } = renderHook(() => useTicketPolling(client, presenter));
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(result.current.viewer).toEqual(viewer);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
+    });
+
+    expect(result.current.viewer).toEqual(viewer);
+
+    act(() => { capturedCrashCb?.(null); });
   });
 });

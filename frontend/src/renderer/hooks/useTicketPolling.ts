@@ -1,7 +1,9 @@
 import { useState, useEffect, useRef } from "react";
 import type { TicketsClient } from "../client/TicketsClient";
 import type { DetailPresenter } from "../detail/DetailPresenter";
-import type { TicketRow, TicketsResponse } from "../types";
+import type { TicketRow, TicketsResponse, Viewer } from "../types";
+
+const DEFAULT_VIEWER: Viewer = { github: null, gitlab: null, azuredevops: null };
 
 export const POLL_INTERVAL_MS = 300_000;
 
@@ -16,6 +18,7 @@ export interface PollingState {
   tickets: TicketRow[];
   status: string;
   ticketCount: string;
+  viewer: Viewer;
   refresh: () => void;
 }
 
@@ -26,6 +29,7 @@ export function useTicketPolling(
   const [tickets, setTickets] = useState<TicketRow[]>([]);
   const [status, setStatus] = useState<string>("");
   const [ticketCount, setTicketCount] = useState<string>("");
+  const [viewer, setViewer] = useState<Viewer>(DEFAULT_VIEWER);
 
   const pollIdRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const backoffTimeoutIdRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -115,12 +119,14 @@ export function useTicketPolling(
         setTickets(data.tickets);
         lastTicketsRef.current = data.tickets;
         notifyPresenter(data.tickets);
+        setViewer(data.viewer ?? DEFAULT_VIEWER);
         setStatus(`${poll_errors.failed_projects.length} Projekt(e) nicht geladen`);
       } else {
         // Full success
         setTickets(data.tickets);
         lastTicketsRef.current = data.tickets;
         notifyPresenter(data.tickets);
+        setViewer(data.viewer ?? DEFAULT_VIEWER);
         setStatus(data.tickets.length === 0 ? "Keine offenen Tickets" : "");
       }
 
@@ -167,5 +173,5 @@ export function useTicketPolling(
     loadTicketsRef.current();
   };
 
-  return { tickets, status, ticketCount, refresh };
+  return { tickets, status, ticketCount, viewer, refresh };
 }
